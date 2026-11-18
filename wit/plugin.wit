@@ -1,0 +1,14 @@
+package pstart:plugin@0.1.0;
+
+world plugin {
+  import host-record: func(value: u32);
+  import host-config: func(key: u32) -> u32;
+  import host-search: func(query: u32) -> u32;
+  import host-app-search: func(query: string) -> string;
+  import host-open: func(path: string) -> u32;
+  import host-copy: func(text: string) -> u32;
+
+  export manifest: func() -> u64;
+  export run: func(input: u32) -> u32;
+  export run-string: func(input: string) -> string;
+}

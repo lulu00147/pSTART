@@ -1,0 +1,28 @@
+[package]
+name = "pstart-index"
+description = "Index state machine, FRN path recovery, in-memory search and SQLite persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+invariants = []
+
+[dependencies]
+pstart-core.workspace = true
+pstart-score.workspace = true
+pstart-verified-core.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+memmap2 = "0.9.5"
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true

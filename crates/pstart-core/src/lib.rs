@@ -1,0 +1,15 @@
+//! Shared, platform-independent types for pSTART.
+//!
+//! This crate is the single source of truth for protocol limits, stable
+//! identifiers and the externally observable error taxonomy. It must not
+//! depend on Windows APIs or on any transport implementation.
+
+pub mod error;
+pub mod ids;
+pub mod limits;
+pub mod model;
+
+pub use error::{ErrorCode, ModelError};
+pub use ids::{FileId, Frn, VolumeId};
+pub use limits::*;
+pub use model::{FileItem, FILE_ATTRIBUTE_DIRECTORY};

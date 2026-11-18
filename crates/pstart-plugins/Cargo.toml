@@ -1,0 +1,18 @@
+[package]
+name = "pstart-plugins"
+description = "Wasmtime plugin host with bounded Host APIs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+pstart-core.workspace = true
+pstart-policy.workspace = true
+thiserror.workspace = true
+wasmtime.workspace = true
+
+[dev-dependencies]
+wasmtime = { workspace = true, features = ["wat"] }
