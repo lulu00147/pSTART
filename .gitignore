@@ -6,11 +6,6 @@
 *.pdb
 .vscode/
 .idea/
-engineering/receipts/
-engineering/tmp/
-engineering/coverage-missing.txt
-engineering/tla/*.jar
-engineering/tla/states/
 *.db
 *.db-wal
 *.db-shm
