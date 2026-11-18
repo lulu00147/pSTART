@@ -3,6 +3,9 @@
 use smallvec::SmallVec;
 use std::collections::{BTreeMap, HashMap};
 
+mod frn_map;
+use frn_map::FrnMap;
+
 use pstart_core::limits::{MAX_PATH_UTF16, MAX_RESULTS};
 use pstart_core::{FileId, FileItem, Frn, VolumeId};
 use pstart_score::apply_penalty;
@@ -92,7 +95,7 @@ pub struct MemoryIndex {
     max_depth: usize,
     slots: Vec<Option<FileRecord>>,
     free_slots: Vec<u32>,
-    by_frn: HashMap<u64, usize>,
+    by_frn: FrnMap,
     by_name: BTreeMap<Box<str>, SmallVec<[u32; 1]>>,
     parent_slots: Vec<u32>,
     slot_present: Vec<bool>,
@@ -135,7 +138,7 @@ impl MemoryIndex {
             max_depth,
             slots: Vec::new(),
             free_slots: Vec::new(),
-            by_frn: HashMap::new(),
+            by_frn: FrnMap::new(),
             by_name: BTreeMap::new(),
             parent_slots: Vec::new(),
             slot_present: Vec::new(),
@@ -185,7 +188,7 @@ impl MemoryIndex {
             records: self.by_frn.len(),
             slots: self.slots.capacity() * std::mem::size_of::<Option<FileRecord>>(),
             by_frn: self.by_frn.capacity()
-                * (std::mem::size_of::<(u64, usize)>() + std::mem::size_of::<usize>()),
+                * (std::mem::size_of::<u64>() + std::mem::size_of::<u32>() + 1),
             metadata: self.parent_slots.capacity() * std::mem::size_of::<u32>()
                 + self.slot_present.capacity()
                 + self.slot_name_valid.capacity(),
@@ -217,8 +220,8 @@ impl MemoryIndex {
     #[must_use]
     pub fn record(&self, frn: Frn) -> Option<&FileRecord> {
         self.by_frn
-            .get(&frn.get())
-            .and_then(|slot| self.slots.get(*slot))
+            .get(frn.get())
+            .and_then(|slot| self.slots.get(slot as usize))
             .and_then(Option::as_ref)
     }
 
@@ -226,7 +229,7 @@ impl MemoryIndex {
         if Frn::new(parent_frn).record_number() == self.root_frn.record_number() {
             Some(ROOT_SLOT)
         } else {
-            self.by_frn.get(&parent_frn).map(|slot| *slot as u32)
+            self.by_frn.get(parent_frn)
         }
     }
 
@@ -280,7 +283,8 @@ impl MemoryIndex {
             ));
         }
 
-        if let Some(slot) = self.by_frn.get(&record.frn).copied() {
+        if let Some(slot) = self.by_frn.get(record.frn) {
+            let slot = slot as usize;
             let Some(existing) = self.slots.get(slot).and_then(Option::as_ref) else {
                 return Err(IndexError::InvalidData(
                     "index slot reference is dangling".to_owned(),
@@ -361,9 +365,10 @@ impl MemoryIndex {
                 "root record cannot be deleted from the index".to_owned(),
             ));
         }
-        let Some(slot) = self.by_frn.get(&frn.get()).copied() else {
+        let Some(slot) = self.by_frn.get(frn.get()) else {
             return Ok(false);
         };
+        let slot = slot as usize;
         let Some(record) = self.slots.get(slot).and_then(Option::as_ref) else {
             return Err(IndexError::InvalidData(
                 "index slot reference is dangling".to_owned(),
@@ -387,7 +392,7 @@ impl MemoryIndex {
                 }
             }
         }
-        self.by_frn.remove(&frn.get());
+        self.by_frn.remove(frn.get());
         self.slots[slot] = None;
         if let Some(signature) = self.slot_signatures.get_mut(slot) {
             *signature = 0;
@@ -467,35 +472,36 @@ impl MemoryIndex {
         if self.by_frn.len() != self.by_name.values().map(SmallVec::len).sum::<usize>() {
             return Some("frn count does not match name buckets");
         }
-        for (frn, slot) in &self.by_frn {
-            let Some(record) = self.slots.get(*slot).and_then(Option::as_ref) else {
+        for (frn, slot) in self.by_frn.iter() {
+            let slot = slot as usize;
+            let Some(record) = self.slots.get(slot).and_then(Option::as_ref) else {
                 return Some("frn points at a free slot");
             };
-            if record.frn != *frn {
+            if record.frn != frn {
                 return Some("slot frn mismatch");
             }
             let key = record.name.to_lowercase();
             let Some(bucket) = self.by_name.get(key.as_str()) else {
                 return Some("missing name bucket");
             };
-            if !bucket.contains(&(*slot as u32)) {
+            if !bucket.contains(&(slot as u32)) {
                 return Some("slot missing from name bucket");
             }
-            if self.slot_signatures.get(*slot).copied() != Some(trigram_signature(&key)) {
+            if self.slot_signatures.get(slot).copied() != Some(trigram_signature(&key)) {
                 return Some("slot signature mismatch");
             }
-            if self.slot_present.get(*slot).copied() != Some(true) {
-                return Some("slot presence mismatch");
-            }
-            if self.slot_name_valid.get(*slot).copied()
-                != Some(crate::path::valid_name(&record.name))
-            {
-                return Some("slot name validity mismatch");
-            }
-            if self.slot_quad_signatures.get(*slot).copied()
+            if self.slot_quad_signatures.get(slot).copied()
                 != Some(quadgram_signature_bytes(key.as_bytes()))
             {
                 return Some("slot quadgram signature mismatch");
+            }
+            if self.slot_present.get(slot).copied() != Some(true) {
+                return Some("slot presence mismatch");
+            }
+            if self.slot_name_valid.get(slot).copied()
+                != Some(crate::path::valid_name(&record.name))
+            {
+                return Some("slot name validity mismatch");
             }
         }
         None

@@ -4,7 +4,7 @@ use super::*;
 
 impl MemoryIndex {
     pub fn resolve_record_path(&self, frn: Frn) -> Result<String, PathError> {
-        let Some(start) = self.by_frn.get(&frn.get()).copied() else {
+        let Some(start) = self.by_frn.get(frn.get()) else {
             return Err(PathError::NotFound { frn });
         };
         let slots = match walk_named(
@@ -12,7 +12,7 @@ impl MemoryIndex {
             &self.slot_present,
             &self.slot_name_valid,
             ROOT_SLOT,
-            start as u32,
+            start,
             self.max_depth,
         ) {
             Ok(slots) => slots,
