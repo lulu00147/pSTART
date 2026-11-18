@@ -94,11 +94,7 @@ impl MemoryIndex {
                     child: frn,
                     parent: self.slot_frn(*slot).unwrap_or(frn),
                 })?;
-            if record.name.is_empty()
-                || record.name.contains('\0')
-                || record.name.contains('\\')
-                || record.name.contains('/')
-            {
+            if !crate::path::valid_name(&record.name) {
                 return Err(PathError::InvalidName {
                     frn: Frn::new(record.frn),
                 });

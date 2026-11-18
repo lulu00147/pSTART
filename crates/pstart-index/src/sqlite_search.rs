@@ -66,7 +66,10 @@ impl SqliteSearch {
     pub fn search(&self, query: &str, limit: u32) -> Result<SearchOutcome, IndexError> {
         let query = query.trim();
         let limit = limit as usize;
-        if query.is_empty() || limit == 0 {
+        if query.is_empty() {
+            return Ok(SearchOutcome::default());
+        }
+        if limit == 0 {
             return Ok(SearchOutcome::default());
         }
         let query_lower = query.to_lowercase();

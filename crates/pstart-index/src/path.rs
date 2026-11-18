@@ -93,7 +93,16 @@ fn finish_path(path: String) -> Result<String, PathError> {
 }
 
 pub(crate) fn valid_name(name: &str) -> bool {
-    !name.is_empty() && !name.contains('\0') && !name.contains('\\') && !name.contains('/')
+    if name.is_empty() {
+        return false;
+    }
+    if name.contains('\0') {
+        return false;
+    }
+    if name.contains('\\') {
+        return false;
+    }
+    !name.contains('/')
 }
 
 /// Resolve a record's full display path.
@@ -108,7 +117,10 @@ pub fn resolve_path<L: RecordLookup + ?Sized>(
     frn: Frn,
     max_depth: usize,
 ) -> Result<String, PathError> {
-    if root.is_empty() || root.contains('\0') {
+    if root.is_empty() {
+        return Err(PathError::InvalidRoot(root.to_owned()));
+    }
+    if root.contains('\0') {
         return Err(PathError::InvalidRoot(root.to_owned()));
     }
     if max_depth == 0 {
@@ -433,13 +445,12 @@ mod tests {
                                         }
                                         cursor = parent;
                                     }
-                                    assert!(
-                                        matches!(
-                                            result,
-                                            Err(PathError::MissingParent { child, parent })
-                                                if parent.get() == u64::from(node)
-                                                    && child.get() == u64::from(expected_child)
-                                        ),
+                                    assert_eq!(
+                                        result,
+                                        Err(PathError::MissingParent {
+                                            child: Frn::new(u64::from(expected_child)),
+                                            parent: Frn::new(u64::from(node)),
+                                        }),
                                         "parents={parents:?} start={start} node={node} expected_child={expected_child}"
                                     );
                                 }
@@ -511,13 +522,12 @@ mod tests {
                     }
                     cursor = parent;
                 }
-                assert!(
-                    matches!(
-                        result,
-                        Err(PathError::MissingParent { child, parent })
-                            if parent.get() == u64::from(node)
-                                && child.get() == u64::from(expected_child)
-                    ),
+                assert_eq!(
+                    result,
+                    Err(PathError::MissingParent {
+                        child: Frn::new(u64::from(expected_child)),
+                        parent: Frn::new(u64::from(node)),
+                    }),
                     "parents={parents:?} start={start} node={node} expected_child={expected_child}"
                 );
             }

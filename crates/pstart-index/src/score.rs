@@ -28,7 +28,10 @@ pub const SCORE_DIRECTORY_PENALTY: i32 = 50;
 /// rank first.
 #[must_use]
 pub fn score_name(name: &str, query: &str) -> Option<i32> {
-    if query.is_empty() || name.is_empty() {
+    if query.is_empty() {
+        return None;
+    }
+    if name.is_empty() {
         return None;
     }
     let name_lower = name.to_lowercase();
@@ -54,18 +57,38 @@ pub fn score_name(name: &str, query: &str) -> Option<i32> {
 fn word_prefix(name_lower: &str, query_lower: &str) -> bool {
     name_lower
         .split(|c: char| SEPARATORS.contains(&c))
-        .any(|token| !token.is_empty() && token.starts_with(query_lower))
+        .any(|token| {
+            if token.is_empty() {
+                return false;
+            }
+            token.starts_with(query_lower)
+        })
 }
 
 fn camel_prefix(name: &str, query_lower: &str) -> bool {
     let mut previous: Option<char> = None;
     for (byte_index, current) in name.char_indices() {
         if let Some(previous) = previous {
-            let is_boundary = (current.is_uppercase() && previous.is_lowercase())
-                || (current.is_alphabetic() && previous.is_numeric())
-                || (current.is_numeric() && previous.is_alphabetic());
-            if is_boundary && name[byte_index..].to_lowercase().starts_with(query_lower) {
-                return true;
+            let mut boundary = false;
+            if current.is_uppercase() {
+                if previous.is_lowercase() {
+                    boundary = true;
+                }
+            }
+            if current.is_alphabetic() {
+                if previous.is_numeric() {
+                    boundary = true;
+                }
+            }
+            if current.is_numeric() {
+                if previous.is_alphabetic() {
+                    boundary = true;
+                }
+            }
+            if boundary {
+                if name[byte_index..].to_lowercase().starts_with(query_lower) {
+                    return true;
+                }
             }
         }
         previous = Some(current);
@@ -82,7 +105,8 @@ mod tests {
     fn match_classes_are_ordered() {
         assert_eq!(score_name("report", "report"), Some(SCORE_EXACT));
         let prefix = score_name("report.txt", "report").unwrap();
-        assert!(prefix < SCORE_PREFIX && prefix > SCORE_WORD_PREFIX);
+        assert!(prefix < SCORE_PREFIX);
+        assert!(prefix > SCORE_WORD_PREFIX);
         let word = score_name("annual_report.txt", "report").unwrap();
         let camel = score_name("annualReport.txt", "report").unwrap();
         let substring = score_name("xxreportxx.txt", "report").unwrap();
@@ -161,6 +185,15 @@ mod tests {
     #[test]
     fn camel_boundary_detects_digit_transition() {
         assert!(score_name("file2report.txt", "report").is_some());
+    }
+
+    #[test]
+    fn camel_boundaries_cover_all_transitions() {
+        assert!(camel_prefix("fileReport", "report"));
+        assert!(camel_prefix("2Report", "report"));
+        assert!(camel_prefix("report2name", "name"));
+        assert!(!camel_prefix("fileXylophone", "report"));
+        assert!(!camel_prefix("report", "report"));
     }
 
     proptest! {

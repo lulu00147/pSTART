@@ -74,7 +74,12 @@ impl MemoryIndex {
         max_depth: usize,
     ) -> Result<Self, IndexError> {
         let root = root.into();
-        if root.is_empty() || root.contains('\0') {
+        if root.is_empty() {
+            return Err(IndexError::InvalidData(
+                "volume root must be non-empty and contain no NUL".to_owned(),
+            ));
+        }
+        if root.contains('\0') {
             return Err(IndexError::InvalidData(
                 "volume root must be non-empty and contain no NUL".to_owned(),
             ));
@@ -186,7 +191,12 @@ impl MemoryIndex {
         if record.frn == 0 {
             return Err(IndexError::InvalidData("FRN 0 is not valid".to_owned()));
         }
-        if record.name.contains('\\') || record.name.contains('/') {
+        if record.name.contains('\\') {
+            return Err(IndexError::InvalidData(
+                "file name contains a path separator".to_owned(),
+            ));
+        }
+        if record.name.contains('/') {
             return Err(IndexError::InvalidData(
                 "file name contains a path separator".to_owned(),
             ));

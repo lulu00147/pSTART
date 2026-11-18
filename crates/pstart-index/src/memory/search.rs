@@ -21,10 +21,59 @@ pub struct SearchOutcome {
 }
 
 impl MemoryIndex {
+    fn scan_substring(
+        &self,
+        query_lower: &str,
+        candidates: &mut Vec<(i32, usize)>,
+        truncated: &mut bool,
+    ) {
+        let query_signature = trigram_signature(query_lower);
+        let query_quad_signature = quadgram_signature_bytes(query_lower.as_bytes());
+        // Prefix buckets are disjoint, so only the fallback needs deduplication.
+        let mut seen: Vec<usize> = candidates.iter().map(|(_, slot)| *slot).collect();
+        seen.sort_unstable();
+        let mut scanned = 0usize;
+        for (slot, record) in self.slots.iter().enumerate() {
+            let Some(record) = record.as_ref() else {
+                continue;
+            };
+            if seen.binary_search(&slot).is_ok() {
+                continue;
+            }
+            if scanned >= MAX_SUBSTRING_SCAN {
+                *truncated = true;
+                break;
+            }
+            scanned += 1;
+            if query_signature != 0 {
+                let bits = self.slot_signatures.get(slot).copied().unwrap_or(0) & query_signature;
+                if bits != query_signature {
+                    continue;
+                }
+            }
+            if query_quad_signature != 0 {
+                let bits = self.slot_quad_signatures.get(slot).copied().unwrap_or(0)
+                    & query_quad_signature;
+                if bits != query_quad_signature {
+                    continue;
+                }
+            }
+            if !contains_lowercase_needle(&record.name, query_lower) {
+                continue;
+            }
+            if let Some(score) = score_name(&record.name, query_lower) {
+                candidates.push((score, slot));
+            }
+        }
+    }
+
     pub fn search(&self, query: &str, limit: u32) -> SearchOutcome {
         let query = query.trim();
         let limit = limit.min(MAX_RESULTS) as usize;
-        if query.is_empty() || limit == 0 {
+        if query.is_empty() {
+            return SearchOutcome::default();
+        }
+        if limit == 0 {
             return SearchOutcome::default();
         }
 
@@ -56,44 +105,9 @@ impl MemoryIndex {
             }
         }
 
-        if candidates.len() < limit && self.might_contain_substring(&query_lower) {
-            let query_signature = trigram_signature(&query_lower);
-            let query_quad_signature = quadgram_signature_bytes(query_lower.as_bytes());
-            // Prefix buckets are disjoint, so only the fallback needs deduplication.
-            let mut seen: Vec<usize> = candidates.iter().map(|(_, slot)| *slot).collect();
-            seen.sort_unstable();
-            let mut scanned = 0usize;
-            for (slot, record) in self.slots.iter().enumerate() {
-                let Some(record) = record.as_ref() else {
-                    continue;
-                };
-                if seen.binary_search(&slot).is_ok() {
-                    continue;
-                }
-                if scanned >= MAX_SUBSTRING_SCAN {
-                    truncated = true;
-                    break;
-                }
-                scanned += 1;
-                if query_signature != 0
-                    && self.slot_signatures.get(slot).copied().unwrap_or(0) & query_signature
-                        != query_signature
-                {
-                    continue;
-                }
-                if query_quad_signature != 0
-                    && self.slot_quad_signatures.get(slot).copied().unwrap_or(0)
-                        & query_quad_signature
-                        != query_quad_signature
-                {
-                    continue;
-                }
-                if !contains_lowercase_needle(&record.name, &query_lower) {
-                    continue;
-                }
-                if let Some(score) = score_name(&record.name, query_lower.as_str()) {
-                    candidates.push((score, slot));
-                }
+        if candidates.len() < limit {
+            if self.might_contain_substring(&query_lower) {
+                self.scan_substring(&query_lower, &mut candidates, &mut truncated);
             }
         }
 
@@ -119,9 +133,11 @@ impl MemoryIndex {
             if hits.len() >= limit {
                 break;
             }
-            if position == sorted_end && sorted_end < candidates.len() {
-                candidates[sorted_end..].sort_by(&mut compare);
-                sorted_end = candidates.len();
+            if position == sorted_end {
+                if sorted_end < candidates.len() {
+                    candidates[sorted_end..].sort_by(&mut compare);
+                    sorted_end = candidates.len();
+                }
             }
             let (score, slot) = candidates[position];
             position += 1;

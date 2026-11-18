@@ -124,8 +124,10 @@ impl TrigramSet {
         let mut result = Vec::new();
         'outer: for shard in &self.shards {
             for doc in shard.candidates(query_lower, limit) {
-                if seen.insert(doc) && result.len() < limit {
-                    result.push(doc);
+                if seen.insert(doc) {
+                    if result.len() < limit {
+                        result.push(doc);
+                    }
                 }
                 if result.len() == limit {
                     break 'outer;
@@ -166,7 +168,12 @@ impl TrigramIndex {
         // mapping. Callers must not mutate the file while this index is open.
         let mmap = unsafe { Mmap::map(&file) }
             .map_err(|error| IndexError::InvalidData(format!("mmap trigram index: {error}")))?;
-        if mmap.len() < HEADER_LEN || &mmap[..MAGIC.len()] != MAGIC {
+        if mmap.len() < HEADER_LEN {
+            return Err(IndexError::InvalidData(
+                "trigram index magic mismatch".to_owned(),
+            ));
+        }
+        if &mmap[..MAGIC.len()] != MAGIC {
             return Err(IndexError::InvalidData(
                 "trigram index magic mismatch".to_owned(),
             ));
@@ -241,7 +248,7 @@ impl TrigramIndex {
     #[must_use]
     pub fn candidates(&self, query_lower: &str, limit: usize) -> Vec<u32> {
         let limit = limit.min(MAX_TRIGRAM_CANDIDATES);
-        if limit == 0 || !query_lower.is_char_boundary(query_lower.len()) {
+        if limit == 0 {
             return Vec::new();
         }
         let terms = trigrams(query_lower.as_bytes());
@@ -259,8 +266,10 @@ impl TrigramIndex {
         let mut result = Vec::with_capacity(limit.min(lists[0].len()));
         for position in 0..lists[0].len() {
             let doc = lists[0].get(position).expect("position is in bounds");
-            if lists[1..].iter().all(|list| list.binary_search(doc)) && result.len() < limit {
-                result.push(doc);
+            if lists[1..].iter().all(|list| list.binary_search(doc)) {
+                if result.len() < limit {
+                    result.push(doc);
+                }
             }
             if result.len() == limit {
                 break;

@@ -405,7 +405,12 @@ impl IndexStore {
             if record.frn == 0 {
                 return Err(IndexError::InvalidData("FRN 0 is not valid".to_owned()));
             }
-            if record.name.contains('\\') || record.name.contains('/') {
+            if record.name.contains('\\') {
+                return Err(IndexError::InvalidData(
+                    "file name contains a path separator".to_owned(),
+                ));
+            }
+            if record.name.contains('/') {
                 return Err(IndexError::InvalidData(
                     "file name contains a path separator".to_owned(),
                 ));
@@ -669,16 +674,21 @@ fn classify_against_current(
     generation: i64,
 ) -> CheckpointDecision {
     if generation < current_generation {
-        CheckpointDecision::GenerationBehind
-    } else if generation == current_generation && next_usn < current_usn {
-        CheckpointDecision::Regression
-    } else if current_journal.is_some_and(|current| current != journal_id)
-        && generation <= current_generation
-    {
-        CheckpointDecision::JournalMismatch
-    } else {
-        CheckpointDecision::Accept
+        return CheckpointDecision::GenerationBehind;
     }
+    if generation == current_generation {
+        if next_usn < current_usn {
+            return CheckpointDecision::Regression;
+        }
+    }
+    if let Some(current) = current_journal {
+        if current != journal_id {
+            if generation <= current_generation {
+                return CheckpointDecision::JournalMismatch;
+            }
+        }
+    }
+    CheckpointDecision::Accept
 }
 
 fn sql_i64(field: &str, value: u64) -> Result<i64, IndexError> {
