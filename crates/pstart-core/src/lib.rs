@@ -8,7 +8,7 @@ pub mod error;
 pub mod ids;
 pub mod limits;
 pub mod model;
-pub mod session_core;
+pub mod session;
 pub mod text;
 pub mod walker;
 
