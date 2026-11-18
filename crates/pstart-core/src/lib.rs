@@ -8,7 +8,9 @@ pub mod error;
 pub mod ids;
 pub mod limits;
 pub mod model;
-pub mod path_core;
+pub mod session_core;
+pub mod text;
+pub mod walker;
 
 pub use error::{ErrorCode, ModelError};
 pub use ids::{FileId, Frn, VolumeId};

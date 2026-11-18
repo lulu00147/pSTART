@@ -4,7 +4,7 @@
 //! identity. The client must still send a compatible `Hello` before any Query
 //! is dispatched. No message field can override the transport identity.
 
-use pstart_core::path_core::{
+use pstart_core::session_core::{
     session_step, MessageKind, SessionAction as CoreAction, SessionState as CoreState,
 };
 use pstart_core::ErrorCode;
