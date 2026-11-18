@@ -12,7 +12,7 @@ use crate::path::{PathError, RecordLookup};
 use crate::score::{
     score_name, SCORE_DEPTH_PENALTY_MAX, SCORE_DIRECTORY_PENALTY, SCORE_EXACT, SCORE_PREFIX,
 };
-use pstart_verified_core::{contains_lowercase_needle, walk_named, NamedWalkError};
+use pstart_path_core::{contains_lowercase_needle, walk_named, NamedWalkError};
 
 /// Maximum number of prefix candidates inspected for one query.
 #[cfg(not(test))]
@@ -784,7 +784,7 @@ impl RecordLookup for MemoryIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pstart_verified_core::contains_case_insensitive;
+    use pstart_path_core::contains_case_insensitive;
 
     fn record(frn: u64, parent: u64, name: &str, usn: u64) -> FileRecord {
         FileRecord {

@@ -13,7 +13,6 @@ workspace = true
 
 [features]
 vc-ltl = ["dep:vc-ltl"]
-loom = []
 
 [dependencies]
 pstart-core.workspace = true
@@ -29,4 +28,3 @@ vc-ltl = { workspace = true, optional = true }
 [dev-dependencies]
 rusqlite.workspace = true
 tempfile.workspace = true
-loom.workspace = true

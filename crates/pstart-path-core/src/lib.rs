@@ -1,7 +1,7 @@
-//! Pure, platform-independent predicates used by the product and proof core.
+//! Pure, platform-independent predicates used by pSTART components.
 //!
 //! This crate has no OS dependency. External semantics (Unicode tables and
-//! filesystem lookups) remain adapters/TCB.
+//! filesystem lookups) remain adapter boundaries.
 
 /// Error from the pure parent-chain walker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,8 +44,8 @@ pub fn guard_next(
 
 /// Walk a parent-index chain until `root`, detecting cycles and depth overflow.
 ///
-/// Parent indices are slot indices; this function is the proof-friendly core
-/// used to replace trait/HashSet based path walking.
+/// Parent indices are slot indices; this function replaces trait/HashSet based
+/// path walking with a pure index scan.
 pub fn walk_parents(
     parents: &[u32],
     root: u32,
@@ -372,7 +372,7 @@ pub fn session_step(
 /// Case-insensitive substring check with an ASCII allocation-free fast path.
 ///
 /// Non-ASCII inputs use Unicode lowercasing; the case mapping table itself is
-/// external TCB behavior.
+/// provided by the standard library.
 #[must_use]
 pub fn contains_case_insensitive(name: &str, needle: &str) -> bool {
     let needle_lower = needle.to_lowercase();

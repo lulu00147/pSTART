@@ -5,7 +5,7 @@
 //! is dispatched. No message field can override the transport identity.
 
 use pstart_core::ErrorCode;
-use pstart_verified_core::{
+use pstart_path_core::{
     session_step, MessageKind, SessionAction as CoreAction, SessionState as CoreState,
 };
 

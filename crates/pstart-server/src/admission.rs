@@ -1,7 +1,6 @@
 //! Shared atomic admission primitives.
 //!
-//! These functions are used by the runtime and by Loom tests, so the tested
-//! algorithm is the actual admission algorithm rather than a copy.
+//! These functions are used directly by the runtime admission path.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

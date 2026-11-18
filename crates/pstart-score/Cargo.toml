@@ -1,6 +1,6 @@
 [package]
 name = "pstart-score"
-description = "Verified arithmetic for pSTART name scoring"
+description = "Arithmetic for pSTART name scoring"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

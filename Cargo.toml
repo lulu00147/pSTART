@@ -8,7 +8,7 @@ members = [
     "crates/pstart-plugins",
     "crates/pstart-policy",
     "crates/pstart-score",
-    "crates/pstart-verified-core",
+    "crates/pstart-path-core",
     "crates/pstart-server",
     "crates/pstart-host",
 ]
@@ -30,7 +30,7 @@ pstart-ntfs = { path = "crates/pstart-ntfs" }
 pstart-plugins = { path = "crates/pstart-plugins" }
 pstart-policy = { path = "crates/pstart-policy" }
 pstart-score = { path = "crates/pstart-score" }
-pstart-verified-core = { path = "crates/pstart-verified-core" }
+pstart-path-core = { path = "crates/pstart-path-core" }
 pstart-server = { path = "crates/pstart-server" }
 pstart-host = { path = "crates/pstart-host" }
 
@@ -41,7 +41,6 @@ toml = "0.8.23"
 rusqlite = { version = "0.40.0", features = ["bundled"] }
 tempfile = "3.20.0"
 proptest = "1.7.0"
-loom = "0.7.2"
 tracing = "0.1.41"
 wasmtime = { version = "36.0.20", default-features = false, features = ["std", "runtime", "cranelift", "component-model"] }
 vc-ltl = "5.0.9"

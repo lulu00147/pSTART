@@ -1,6 +1,6 @@
 [package]
-name = "pstart-verified-core"
-description = "Platform-independent pure predicates shared with the formal proof core"
+name = "pstart-path-core"
+description = "Platform-independent pure predicates shared by pSTART components"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
