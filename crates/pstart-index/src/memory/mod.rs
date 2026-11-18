@@ -45,6 +45,44 @@ const ROOT_SLOT: u32 = u32::MAX;
 /// Sentinel for a parent FRN not currently present in the index.
 const MISSING_SLOT: u32 = u32::MAX - 1;
 
+/// Approximate heap usage of an index, for diagnostics.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MemoryReport {
+    /// Live records.
+    pub records: usize,
+    /// Slot vector plus record names.
+    pub slots: usize,
+    /// FRN lookup table.
+    pub by_frn: usize,
+    /// Lowercased name buckets.
+    pub by_name: usize,
+    /// Parent-child waiting lists.
+    pub children: usize,
+    /// Parent slot and validity vectors.
+    pub metadata: usize,
+    /// Trigram/quadgram bitmaps.
+    pub bloom: usize,
+    /// Per-slot signatures.
+    pub signatures: usize,
+    /// Free slot list.
+    pub free_slots: usize,
+}
+
+impl MemoryReport {
+    /// Total estimated heap bytes.
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.slots
+            + self.by_frn
+            + self.by_name
+            + self.children
+            + self.metadata
+            + self.bloom
+            + self.signatures
+            + self.free_slots
+    }
+}
+
 /// Mutable in-memory file index for one volume.
 #[derive(Debug)]
 pub struct MemoryIndex {
@@ -53,13 +91,13 @@ pub struct MemoryIndex {
     root_frn: Frn,
     max_depth: usize,
     slots: Vec<Option<FileRecord>>,
-    free_slots: Vec<usize>,
+    free_slots: Vec<u32>,
     by_frn: HashMap<u64, usize>,
-    by_name: BTreeMap<String, SmallVec<[usize; 1]>>,
+    by_name: BTreeMap<Box<str>, SmallVec<[u32; 1]>>,
     parent_slots: Vec<u32>,
     slot_present: Vec<bool>,
     slot_name_valid: Vec<bool>,
-    children: HashMap<u64, SmallVec<[usize; 2]>>,
+    children: HashMap<u64, SmallVec<[u32; 2]>>,
     trigram_bits: Vec<u64>,
     quadgram_bits: Vec<u64>,
     slot_signatures: Vec<u64>,
@@ -140,6 +178,41 @@ impl MemoryIndex {
         self.by_frn.is_empty()
     }
 
+    /// Estimated heap usage by component.
+    #[must_use]
+    pub fn memory_report(&self) -> MemoryReport {
+        let mut report = MemoryReport {
+            records: self.by_frn.len(),
+            slots: self.slots.capacity() * std::mem::size_of::<Option<FileRecord>>(),
+            by_frn: self.by_frn.capacity()
+                * (std::mem::size_of::<(u64, usize)>() + std::mem::size_of::<usize>()),
+            metadata: self.parent_slots.capacity() * std::mem::size_of::<u32>()
+                + self.slot_present.capacity()
+                + self.slot_name_valid.capacity(),
+            bloom: (self.trigram_bits.capacity() + self.quadgram_bits.capacity())
+                * std::mem::size_of::<u64>(),
+            signatures: (self.slot_signatures.capacity() + self.slot_quad_signatures.capacity())
+                * std::mem::size_of::<u64>(),
+            free_slots: self.free_slots.capacity() * std::mem::size_of::<u32>(),
+            ..MemoryReport::default()
+        };
+        for record in self.slots.iter().flatten() {
+            report.slots += record.name.capacity();
+        }
+        for (key, bucket) in &self.by_name {
+            report.by_name += key.len()
+                + bucket.capacity() * std::mem::size_of::<u32>()
+                + std::mem::size_of::<(Box<str>, SmallVec<[u32; 1]>)>()
+                + 32;
+        }
+        for (_, children) in &self.children {
+            report.children += children.capacity() * std::mem::size_of::<u32>()
+                + std::mem::size_of::<(u64, SmallVec<[u32; 2]>)>()
+                + 16;
+        }
+        report
+    }
+
     /// Return a record by FRN.
     #[must_use]
     pub fn record(&self, frn: Frn) -> Option<&FileRecord> {
@@ -158,12 +231,12 @@ impl MemoryIndex {
     }
 
     fn attach_child(&mut self, parent_frn: u64, slot: usize) {
-        self.children.entry(parent_frn).or_default().push(slot);
+        self.children.entry(parent_frn).or_default().push(slot as u32);
     }
 
     fn detach_child(&mut self, parent_frn: u64, slot: usize) {
         let empty = if let Some(children) = self.children.get_mut(&parent_frn) {
-            children.retain(|child| *child != slot);
+            children.retain(|child| *child as usize != slot);
             children.is_empty()
         } else {
             false
@@ -176,6 +249,7 @@ impl MemoryIndex {
     fn update_waiting_children(&mut self, parent_frn: u64, parent_slot: u32) {
         if let Some(children) = self.children.get(&parent_frn).cloned() {
             for child in children {
+                let child = child as usize;
                 if self.slots.get(child).and_then(Option::as_ref).is_some() {
                     self.parent_slots[child] = parent_slot;
                 }
@@ -234,7 +308,10 @@ impl MemoryIndex {
             self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
             self.slots[slot] = Some(record);
             if name_changed {
-                self.by_name.entry(key).or_default().push(slot);
+                self.by_name
+                    .entry(key.into_boxed_str())
+                    .or_default()
+                    .push(slot as u32);
             }
             return Ok(true);
         }
@@ -244,6 +321,7 @@ impl MemoryIndex {
         let key = record.name.to_lowercase();
         let name_valid = crate::path::valid_name(&record.name);
         let slot = if let Some(slot) = self.free_slots.pop() {
+            let slot = slot as usize;
             self.slots[slot] = Some(record);
             self.parent_slots[slot] = MISSING_SLOT;
             self.slot_present[slot] = true;
@@ -263,7 +341,10 @@ impl MemoryIndex {
         self.mark_ngrams(&key);
         self.slot_signatures[slot] = trigram_signature(&key);
         self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
-        self.by_name.entry(key).or_default().push(slot);
+        self.by_name
+            .entry(key.into_boxed_str())
+            .or_default()
+            .push(slot as u32);
         self.parent_slots[slot] = self.parent_slot(parent_frn).unwrap_or(MISSING_SLOT);
         self.attach_child(parent_frn, slot);
         self.update_waiting_children(frn, slot as u32);
@@ -297,6 +378,7 @@ impl MemoryIndex {
         self.slot_name_valid[slot] = false;
         if let Some(children) = self.children.get(&frn.get()).cloned() {
             for child in children {
+                let child = child as usize;
                 if self.slots.get(child).and_then(Option::as_ref).is_some() {
                     self.parent_slots[child] = MISSING_SLOT;
                 }
@@ -310,7 +392,7 @@ impl MemoryIndex {
         if let Some(signature) = self.slot_quad_signatures.get_mut(slot) {
             *signature = 0;
         }
-        self.free_slots.push(slot);
+        self.free_slots.push(slot as u32);
         Ok(true)
     }
 
@@ -357,10 +439,10 @@ impl MemoryIndex {
 
     fn remove_from_name_index(&mut self, name: &str, slot: usize) {
         let key = name.to_lowercase();
-        if let Some(slots) = self.by_name.get_mut(&key) {
-            slots.retain(|candidate| *candidate != slot);
+        if let Some(slots) = self.by_name.get_mut(key.as_str()) {
+            slots.retain(|candidate| *candidate as usize != slot);
             if slots.is_empty() {
-                self.by_name.remove(&key);
+                self.by_name.remove(key.as_str());
             }
         }
     }
@@ -390,10 +472,10 @@ impl MemoryIndex {
                 return Some("slot frn mismatch");
             }
             let key = record.name.to_lowercase();
-            let Some(bucket) = self.by_name.get(&key) else {
+            let Some(bucket) = self.by_name.get(key.as_str()) else {
                 return Some("missing name bucket");
             };
-            if !bucket.contains(slot) {
+            if !bucket.contains(&(*slot as u32)) {
                 return Some("slot missing from name bucket");
             }
             if self.slot_signatures.get(*slot).copied() != Some(trigram_signature(&key)) {

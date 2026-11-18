@@ -43,6 +43,19 @@ fn main() {
             .expect("upsert");
     }
     println!("build_ms={}", start.elapsed().as_millis());
+    let report = index.memory_report();
+    println!(
+        "mem_total_mb={:.1} slots={:.1} by_frn={:.1} by_name={:.1} children={:.1} metadata={:.1} bloom={:.1} signatures={:.1} free={:.1}",
+        report.total() as f64 / 1_048_576.0,
+        report.slots as f64 / 1_048_576.0,
+        report.by_frn as f64 / 1_048_576.0,
+        report.by_name as f64 / 1_048_576.0,
+        report.children as f64 / 1_048_576.0,
+        report.metadata as f64 / 1_048_576.0,
+        report.bloom as f64 / 1_048_576.0,
+        report.signatures as f64 / 1_048_576.0,
+        report.free_slots as f64 / 1_048_576.0,
+    );
 
     let mut samples = Vec::with_capacity(101);
     for _ in 0..101 {

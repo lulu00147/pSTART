@@ -86,24 +86,26 @@ impl MemoryIndex {
         let mut candidates: Vec<(i32, usize)> = Vec::new();
         let mut truncated = false;
 
-        for (name, slots) in self.by_name.range(query_lower.clone()..) {
+        let start: Box<str> = query_lower.clone().into_boxed_str();
+        for (name, slots) in self.by_name.range(start..) {
             if !name.starts_with(&query_lower) {
                 break;
             }
-            let base = if name == &query_lower {
+            let base = if name.as_ref() == query_lower {
                 SCORE_EXACT
             } else {
                 SCORE_PREFIX
             };
             let chars = name.chars().count();
             for slot in slots {
+                let slot = *slot as usize;
                 if candidates.len() >= MAX_PREFIX_CANDIDATES {
                     truncated = true;
                     break;
                 }
-                if self.slots.get(*slot).and_then(Option::as_ref).is_some() {
+                if self.slots.get(slot).and_then(Option::as_ref).is_some() {
                     let score = apply_penalty(base, chars);
-                    candidates.push((score, *slot));
+                    candidates.push((score, slot));
                 }
             }
             if truncated {

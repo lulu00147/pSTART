@@ -92,7 +92,7 @@ fn consistency_error_detects_missing_bucket() {
         .by_name
         .get_mut("annual-report.txt")
         .unwrap()
-        .push(slot);
+        .push(slot as u32);
     assert_eq!(index.consistency_error(), Some("missing name bucket"));
 }
 
@@ -128,8 +128,8 @@ fn consistency_error_detects_bucket_without_slot() {
     let slot = *index.by_frn.get(&12).unwrap();
     let other = *index.by_frn.get(&13).unwrap();
     let bucket = index.by_name.get_mut("report.docx").unwrap();
-    bucket.retain(|entry| *entry != slot);
-    bucket.push(other);
+    bucket.retain(|entry| *entry as usize != slot);
+    bucket.push(other as u32);
     assert_eq!(
         index.consistency_error(),
         Some("slot missing from name bucket")
@@ -902,7 +902,7 @@ fn dangling_slots_are_reported_or_skipped() {
     assert!(index.delete(Frn::new(999), 1).is_err());
     index
         .by_name
-        .entry("ghost".to_owned())
+        .entry("ghost".into())
         .or_default()
         .push(12_345);
     let outcome = index.search("ghost", 1);
