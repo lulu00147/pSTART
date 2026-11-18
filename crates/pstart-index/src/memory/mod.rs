@@ -217,9 +217,10 @@ impl MemoryIndex {
             }
             let old_parent = existing.parent_frn;
             let old_name = existing.name.clone();
-            if old_name != record.name {
+            let key = record.name.to_lowercase();
+            let name_changed = old_name != record.name;
+            if name_changed {
                 self.remove_from_name_index(&old_name, slot);
-                self.insert_into_name_index(&record.name, slot);
             }
             if old_parent != record.parent_frn {
                 self.detach_child(old_parent, slot);
@@ -228,37 +229,41 @@ impl MemoryIndex {
             self.parent_slots[slot] = self.parent_slot(record.parent_frn).unwrap_or(MISSING_SLOT);
             self.slot_present[slot] = true;
             self.slot_name_valid[slot] = crate::path::valid_name(&record.name);
-            self.slot_signatures[slot] = trigram_signature(&record.name.to_lowercase());
-            self.slot_quad_signatures[slot] =
-                quadgram_signature_bytes(record.name.to_lowercase().as_bytes());
+            self.mark_ngrams(&key);
+            self.slot_signatures[slot] = trigram_signature(&key);
+            self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
             self.slots[slot] = Some(record);
+            if name_changed {
+                self.by_name.entry(key).or_default().push(slot);
+            }
             return Ok(true);
         }
 
         let parent_frn = record.parent_frn;
         let frn = record.frn;
+        let key = record.name.to_lowercase();
+        let name_valid = crate::path::valid_name(&record.name);
         let slot = if let Some(slot) = self.free_slots.pop() {
-            self.slots[slot] = Some(record.clone());
+            self.slots[slot] = Some(record);
             self.parent_slots[slot] = MISSING_SLOT;
             self.slot_present[slot] = true;
-            self.slot_name_valid[slot] = crate::path::valid_name(&record.name);
+            self.slot_name_valid[slot] = name_valid;
             slot
         } else {
             let slot = self.slots.len();
-            self.slots.push(Some(record.clone()));
+            self.slots.push(Some(record));
             self.parent_slots.push(MISSING_SLOT);
             self.slot_present.push(true);
-            self.slot_name_valid
-                .push(crate::path::valid_name(&record.name));
+            self.slot_name_valid.push(name_valid);
             self.slot_signatures.push(0);
             self.slot_quad_signatures.push(0);
             slot
         };
         self.by_frn.insert(frn, slot);
-        self.insert_into_name_index(&record.name, slot);
-        self.slot_signatures[slot] = trigram_signature(&record.name.to_lowercase());
-        self.slot_quad_signatures[slot] =
-            quadgram_signature_bytes(record.name.to_lowercase().as_bytes());
+        self.mark_ngrams(&key);
+        self.slot_signatures[slot] = trigram_signature(&key);
+        self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
+        self.by_name.entry(key).or_default().push(slot);
         self.parent_slots[slot] = self.parent_slot(parent_frn).unwrap_or(MISSING_SLOT);
         self.attach_child(parent_frn, slot);
         self.update_waiting_children(frn, slot as u32);
@@ -318,12 +323,6 @@ impl MemoryIndex {
     }
 
     /// Search with a bounded prefix scan and bounded substring fallback.
-    fn insert_into_name_index(&mut self, name: &str, slot: usize) {
-        let key = name.to_lowercase();
-        self.mark_ngrams(&key);
-        self.by_name.entry(key).or_default().push(slot);
-    }
-
     fn mark_ngrams(&mut self, name_lower: &str) {
         let bytes = name_lower.as_bytes();
         for window in bytes.windows(3) {

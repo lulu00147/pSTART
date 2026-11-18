@@ -2,13 +2,13 @@
 
 /// Bloom bits for the substring negative filter.
 #[cfg(not(test))]
-pub(super) const TRIGRAM_BITS: usize = 1 << 27;
+pub(super) const TRIGRAM_BITS: usize = 1 << 24;
 #[cfg(test)]
 pub(super) const TRIGRAM_BITS: usize = 1 << 16;
 
 /// Bloom bits for the four-byte negative filter.
 #[cfg(not(test))]
-pub(super) const QUADGRAM_BITS: usize = 1 << 26;
+pub(super) const QUADGRAM_BITS: usize = 1 << 23;
 #[cfg(test)]
 pub(super) const QUADGRAM_BITS: usize = 1 << 16;
 
