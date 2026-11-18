@@ -39,6 +39,7 @@ toml = "0.8.23"
 rusqlite = { version = "0.40.0", features = ["bundled"] }
 tempfile = "3.20.0"
 proptest = "1.7.0"
+smallvec = "1.13.2"
 tracing = "0.1.41"
 wasmtime = { version = "36.0.20", default-features = false, features = ["std", "runtime", "cranelift", "component-model"] }
 vc-ltl = "5.0.9"

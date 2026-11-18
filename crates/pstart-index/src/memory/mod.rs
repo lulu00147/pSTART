@@ -1,5 +1,6 @@
 //! In-memory index with bounded search and FRN path reconstruction.
 
+use smallvec::SmallVec;
 use std::collections::{BTreeMap, HashMap};
 
 use pstart_core::limits::{MAX_PATH_UTF16, MAX_RESULTS};
@@ -54,11 +55,11 @@ pub struct MemoryIndex {
     slots: Vec<Option<FileRecord>>,
     free_slots: Vec<usize>,
     by_frn: HashMap<u64, usize>,
-    by_name: BTreeMap<String, Vec<usize>>,
+    by_name: BTreeMap<String, SmallVec<[usize; 1]>>,
     parent_slots: Vec<u32>,
     slot_present: Vec<bool>,
     slot_name_valid: Vec<bool>,
-    children: HashMap<u64, Vec<usize>>,
+    children: HashMap<u64, SmallVec<[usize; 2]>>,
     trigram_bits: Vec<u64>,
     quadgram_bits: Vec<u64>,
     slot_signatures: Vec<u64>,
@@ -379,7 +380,7 @@ impl MemoryIndex {
         if self.slot_present.len() != self.slots.len() {
             return Some("slot presence count mismatch");
         }
-        if self.by_frn.len() != self.by_name.values().map(Vec::len).sum::<usize>() {
+        if self.by_frn.len() != self.by_name.values().map(SmallVec::len).sum::<usize>() {
             return Some("frn count does not match name buckets");
         }
         for (frn, slot) in &self.by_frn {

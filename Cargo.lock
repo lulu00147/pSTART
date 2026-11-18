@@ -703,6 +703,7 @@ dependencies = [
  "pstart-score",
  "rusqlite",
  "serde",
+ "smallvec",
  "tempfile",
  "thiserror",
 ]
