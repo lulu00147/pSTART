@@ -95,7 +95,7 @@ impl MemoryIndex {
             } else {
                 SCORE_PREFIX
             };
-            let chars = name.chars().count();
+            let chars = crate::score::char_count(name);
             for slot in std::iter::once(*first).chain(self.names.duplicates(name).iter().copied()) {
                 let slot = slot as usize;
                 if candidates.len() >= MAX_PREFIX_CANDIDATES {

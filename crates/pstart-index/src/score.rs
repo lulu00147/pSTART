@@ -54,7 +54,15 @@ pub(crate) fn score_name_lower(name: &str, name_lower: &str, query_lower: &str) 
         return None;
     };
 
-    Some(apply_penalty(base, name.chars().count()))
+    Some(apply_penalty(base, char_count(name)))
+}
+
+pub(crate) fn char_count(name: &str) -> usize {
+    if name.is_ascii() {
+        name.len()
+    } else {
+        name.chars().count()
+    }
 }
 
 fn word_prefix(name_lower: &str, query_lower: &str) -> bool {
