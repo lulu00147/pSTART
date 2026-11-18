@@ -149,11 +149,23 @@ mod tests {
     #[test]
     fn volume_id_rejects_control_and_whitespace() {
         assert_eq!(
+            VolumeId::new("C:\u{7}"),
+            Err(ModelError::VolumeIdInvalidCharacter)
+        );
+        assert_eq!(
             VolumeId::new("C:\n"),
             Err(ModelError::VolumeIdInvalidCharacter)
         );
         assert_eq!(
             VolumeId::new("C: "),
+            Err(ModelError::VolumeIdInvalidCharacter)
+        );
+        assert_eq!(
+            VolumeId::new(String::from("C:\u{7}")),
+            Err(ModelError::VolumeIdInvalidCharacter)
+        );
+        assert_eq!(
+            VolumeId::new(String::from("C: ")),
             Err(ModelError::VolumeIdInvalidCharacter)
         );
     }

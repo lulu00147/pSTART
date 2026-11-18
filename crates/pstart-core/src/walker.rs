@@ -1,44 +1,5 @@
 //! Parent-chain walking for path reconstruction.
 
-/// Error from the pure parent-chain walker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WalkError {
-    /// Depth budget exhausted.
-    DepthExceeded,
-    /// A node was visited twice.
-    Cycle { node: u32 },
-    /// A parent index is not present.
-    MissingParent { node: u32 },
-}
-
-/// Walk a parent-index chain until `root`, detecting cycles and depth overflow.
-///
-/// Parent indices are slot indices; this function replaces trait/HashSet based
-/// path walking with a pure index scan.
-pub fn walk_parents(
-    parents: &[u32],
-    root: u32,
-    start: u32,
-    max_depth: usize,
-) -> Result<Vec<u32>, WalkError> {
-    let mut current = start;
-    let mut visited = Vec::new();
-    while current != root {
-        if visited.len() >= max_depth {
-            return Err(WalkError::DepthExceeded);
-        }
-        if visited.contains(&current) {
-            return Err(WalkError::Cycle { node: current });
-        }
-        visited.push(current);
-        let parent = parents
-            .get(current as usize)
-            .ok_or(WalkError::MissingParent { node: current })?;
-        current = *parent;
-    }
-    Ok(visited)
-}
-
 /// Failure kind for a parent walk that also enforces per-node name validity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NamedWalkError {
@@ -97,13 +58,13 @@ pub fn walk_named(
             });
         }
         let parent = parents[index];
-        if index >= present.len() || !present[index] {
+        if !present.get(index).copied().unwrap_or(false) {
             return Err(NamedWalkFailure {
                 error: NamedWalkError::MissingParent { node: current },
                 visited,
             });
         }
-        if index >= name_valid.len() || !name_valid[index] {
+        if !name_valid.get(index).copied().unwrap_or(false) {
             return Err(NamedWalkFailure {
                 error: NamedWalkError::InvalidName { node: current },
                 visited,
@@ -237,49 +198,16 @@ mod tests {
     }
 
     #[test]
-    fn parent_walker_handles_chain_cycle_and_depth() {
+    fn named_walk_reports_absent_presence_slot() {
         let parents = [0, 0, 1, 2];
-        assert_eq!(walk_parents(&parents, 0, 3, 4).unwrap(), vec![3, 2, 1]);
+        let present = [true, true];
+        let valid = [true, true, true, true];
         assert_eq!(
-            walk_parents(&parents, 0, 3, 2),
-            Err(WalkError::DepthExceeded)
+            walk_named(&parents, &present, &valid, 0, 3, 8),
+            Err(NamedWalkFailure {
+                error: NamedWalkError::MissingParent { node: 3 },
+                visited: Vec::new(),
+            })
         );
-        let cycle = [0, 2, 1];
-        assert_eq!(
-            walk_parents(&cycle, 9, 1, 4),
-            Err(WalkError::Cycle { node: 1 })
-        );
-        assert_eq!(
-            walk_parents(&parents, 0, 7, 4),
-            Err(WalkError::MissingParent { node: 7 })
-        );
-    }
-
-    #[test]
-    fn parent_walker_paths_are_parent_chains() {
-        let cases: [[u32; 4]; 3] = [[0, 0, 1, 2], [0, 2, 1, 3], [0, 0, 0, 0]];
-        for parents in cases {
-            for root in 0..4u32 {
-                for start in 0..4u32 {
-                    for max_depth in 0..5usize {
-                        let Ok(path) = walk_parents(&parents, root, start, max_depth) else {
-                            continue;
-                        };
-                        for pair in path.windows(2) {
-                            assert_eq!(
-                                parents[pair[0] as usize], pair[1],
-                                "broken parent edge in {path:?}"
-                            );
-                        }
-                        if let Some(last) = path.last() {
-                            assert_eq!(
-                                parents[*last as usize], root,
-                                "last parent is not root in {path:?}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
     }
 }

@@ -175,8 +175,38 @@ fn collect_components<L: RecordLookup + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum WalkError {
+        DepthExceeded,
+        Cycle { node: u32 },
+        MissingParent { node: u32 },
+    }
+
+    fn walk_parents(
+        parents: &[u32],
+        root: u32,
+        start: u32,
+        max_depth: usize,
+    ) -> Result<Vec<u32>, WalkError> {
+        let mut current = start;
+        let mut visited = Vec::new();
+        while current != root {
+            if visited.len() >= max_depth {
+                return Err(WalkError::DepthExceeded);
+            }
+            if visited.contains(&current) {
+                return Err(WalkError::Cycle { node: current });
+            }
+            visited.push(current);
+            let parent = parents
+                .get(current as usize)
+                .ok_or(WalkError::MissingParent { node: current })?;
+            current = *parent;
+        }
+        Ok(visited)
+    }
     use proptest::prelude::*;
-    use pstart_core::walker::{walk_parents, WalkError};
     use std::collections::HashMap;
 
     struct MapLookup(HashMap<u64, FileRecord>);
@@ -357,7 +387,7 @@ mod tests {
                                 Frn::new(u64::from(start)),
                                 4,
                             );
-                            match pstart_core::walker::walk_parents(&parents, 5, start, 4) {
+                            match walk_parents(&parents, 5, start, 4) {
                                 Ok(nodes) => {
                                     let mut expected = String::from("C:");
                                     for node in nodes.iter().rev() {
@@ -376,14 +406,14 @@ mod tests {
                                         "parents={parents:?} start={start}"
                                     );
                                 }
-                                Err(pstart_core::walker::WalkError::DepthExceeded) => {
+                                Err(WalkError::DepthExceeded) => {
                                     assert_eq!(
                                         result,
                                         Err(PathError::DepthExceeded { max: 4 }),
                                         "parents={parents:?} start={start}"
                                     );
                                 }
-                                Err(pstart_core::walker::WalkError::Cycle { node }) => {
+                                Err(WalkError::Cycle { node }) => {
                                     assert!(
                                         matches!(
                                             result,
@@ -393,7 +423,7 @@ mod tests {
                                         "parents={parents:?} start={start}"
                                     );
                                 }
-                                Err(pstart_core::walker::WalkError::MissingParent { node }) => {
+                                Err(WalkError::MissingParent { node }) => {
                                     let mut expected_child = start;
                                     let mut cursor = start;
                                     while let Some(parent) = parents.get(cursor as usize).copied() {
@@ -440,7 +470,7 @@ mod tests {
             Frn::new(u64::from(start)),
             max_depth,
         );
-        match pstart_core::walker::walk_parents(parents, 5, start, max_depth) {
+        match walk_parents(parents, 5, start, max_depth) {
             Ok(nodes) => {
                 let mut expected = String::from("C:");
                 for node in nodes.iter().rev() {
@@ -455,14 +485,14 @@ mod tests {
                 }
                 assert_eq!(result, Ok(expected), "parents={parents:?} start={start}");
             }
-            Err(pstart_core::walker::WalkError::DepthExceeded) => {
+            Err(WalkError::DepthExceeded) => {
                 assert_eq!(
                     result,
                     Err(PathError::DepthExceeded { max: max_depth }),
                     "parents={parents:?} start={start}"
                 );
             }
-            Err(pstart_core::walker::WalkError::Cycle { node }) => {
+            Err(WalkError::Cycle { node }) => {
                 assert!(
                     matches!(
                         result,
@@ -471,7 +501,7 @@ mod tests {
                     "parents={parents:?} start={start}"
                 );
             }
-            Err(pstart_core::walker::WalkError::MissingParent { node }) => {
+            Err(WalkError::MissingParent { node }) => {
                 let mut expected_child = start;
                 let mut cursor = start;
                 while let Some(parent) = parents.get(cursor as usize).copied() {
