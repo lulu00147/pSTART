@@ -65,6 +65,7 @@ fn word_prefix(name_lower: &str, query_lower: &str) -> bool {
         })
 }
 
+#[allow(clippy::collapsible_if)] // sequential conditions keep MC/DC satisfiable
 fn camel_prefix(name: &str, query_lower: &str) -> bool {
     let mut previous: Option<char> = None;
     for (byte_index, current) in name.char_indices() {

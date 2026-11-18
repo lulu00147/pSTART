@@ -609,6 +609,7 @@ impl IndexStore {
     }
 }
 
+#[allow(clippy::collapsible_if)] // sequential conditions keep MC/DC satisfiable
 fn classify_checkpoint(checkpoint: Option<Checkpoint>, observed: u64) -> CheckpointStatus {
     match checkpoint {
         None => CheckpointStatus::Missing,
@@ -665,6 +666,7 @@ enum CheckpointDecision {
     JournalMismatch,
 }
 
+#[allow(clippy::collapsible_if)] // sequential conditions keep MC/DC satisfiable
 fn classify_against_current(
     current_journal: Option<i64>,
     current_usn: i64,

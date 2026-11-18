@@ -21,6 +21,7 @@ pub struct SearchOutcome {
 }
 
 impl MemoryIndex {
+    #[allow(clippy::collapsible_if)] // sequential conditions keep MC/DC satisfiable
     fn scan_substring(
         &self,
         query_lower: &str,
@@ -67,6 +68,7 @@ impl MemoryIndex {
         }
     }
 
+    #[allow(clippy::collapsible_if)] // sequential conditions keep MC/DC satisfiable
     pub fn search(&self, query: &str, limit: u32) -> SearchOutcome {
         let query = query.trim();
         let limit = limit.min(MAX_RESULTS) as usize;

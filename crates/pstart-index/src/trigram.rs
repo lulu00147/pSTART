@@ -119,6 +119,7 @@ impl TrigramSet {
 
     /// Union candidates from all shards, bounded by `limit`.
     #[must_use]
+    #[allow(clippy::collapsible_if)] // sequential conditions keep MC/DC satisfiable
     pub fn candidates(&self, query_lower: &str, limit: usize) -> Vec<u32> {
         let mut seen = std::collections::HashSet::new();
         let mut result = Vec::new();
@@ -246,6 +247,7 @@ impl TrigramIndex {
     /// The caller must still verify the full name; this method only intersects
     /// posting lists.
     #[must_use]
+    #[allow(clippy::collapsible_if)] // sequential conditions keep MC/DC satisfiable
     pub fn candidates(&self, query_lower: &str, limit: usize) -> Vec<u32> {
         let limit = limit.min(MAX_TRIGRAM_CANDIDATES);
         if limit == 0 {
