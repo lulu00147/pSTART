@@ -205,7 +205,7 @@ impl MemoryIndex {
                 + std::mem::size_of::<(Box<str>, SmallVec<[u32; 1]>)>()
                 + 32;
         }
-        for (_, children) in &self.children {
+        for children in self.children.values() {
             report.children += children.capacity() * std::mem::size_of::<u32>()
                 + std::mem::size_of::<(u64, SmallVec<[u32; 2]>)>()
                 + 16;
@@ -231,7 +231,10 @@ impl MemoryIndex {
     }
 
     fn attach_child(&mut self, parent_frn: u64, slot: usize) {
-        self.children.entry(parent_frn).or_default().push(slot as u32);
+        self.children
+            .entry(parent_frn)
+            .or_default()
+            .push(slot as u32);
     }
 
     fn detach_child(&mut self, parent_frn: u64, slot: usize) {
