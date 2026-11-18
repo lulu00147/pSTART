@@ -86,8 +86,7 @@ impl MemoryIndex {
         let mut candidates: Vec<(i32, usize)> = Vec::new();
         let mut truncated = false;
 
-        let start: Box<str> = query_lower.clone().into_boxed_str();
-        for (name, slots) in self.by_name.range(start..) {
+        for (name, first) in self.names.range(&query_lower) {
             if !name.starts_with(&query_lower) {
                 break;
             }
@@ -97,8 +96,8 @@ impl MemoryIndex {
                 SCORE_PREFIX
             };
             let chars = name.chars().count();
-            for slot in slots {
-                let slot = *slot as usize;
+            for slot in std::iter::once(*first).chain(self.names.duplicates(name).iter().copied()) {
+                let slot = slot as usize;
                 if candidates.len() >= MAX_PREFIX_CANDIDATES {
                     truncated = true;
                     break;

@@ -1,10 +1,13 @@
 //! In-memory index with bounded search and FRN path reconstruction.
 
 use smallvec::SmallVec;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 mod frn_map;
+mod name_index;
+
 use frn_map::FrnMap;
+use name_index::NameIndex;
 
 use pstart_core::limits::{MAX_PATH_UTF16, MAX_RESULTS};
 use pstart_core::{FileId, FileItem, Frn, VolumeId};
@@ -96,7 +99,7 @@ pub struct MemoryIndex {
     slots: Vec<Option<FileRecord>>,
     free_slots: Vec<u32>,
     by_frn: FrnMap,
-    by_name: BTreeMap<Box<str>, SmallVec<[u32; 1]>>,
+    names: NameIndex,
     parent_slots: Vec<u32>,
     slot_present: Vec<bool>,
     slot_name_valid: Vec<bool>,
@@ -139,7 +142,7 @@ impl MemoryIndex {
             slots: Vec::new(),
             free_slots: Vec::new(),
             by_frn: FrnMap::new(),
-            by_name: BTreeMap::new(),
+            names: NameIndex::default(),
             parent_slots: Vec::new(),
             slot_present: Vec::new(),
             slot_name_valid: Vec::new(),
@@ -202,12 +205,10 @@ impl MemoryIndex {
         for record in self.slots.iter().flatten() {
             report.slots += record.name.capacity();
         }
-        for (key, bucket) in &self.by_name {
-            report.by_name += key.len()
-                + bucket.capacity() * std::mem::size_of::<u32>()
-                + std::mem::size_of::<(Box<str>, SmallVec<[u32; 1]>)>()
-                + 32;
+        for (key, _) in self.names.primary_entries() {
+            report.by_name += key.len() + std::mem::size_of::<(Box<str>, u32)>() + 32;
         }
+        report.by_name += self.names.duplicate_bytes();
         for children in self.children.values() {
             report.children += children.capacity() * std::mem::size_of::<u32>()
                 + std::mem::size_of::<(u64, SmallVec<[u32; 2]>)>()
@@ -301,7 +302,8 @@ impl MemoryIndex {
             let key = record.name.to_lowercase();
             let name_changed = old_name != record.name;
             if name_changed {
-                self.remove_from_name_index(&old_name, slot);
+                let old_key = old_name.to_lowercase();
+                self.names.remove(&old_key, slot as u32);
             }
             if old_parent != record.parent_frn {
                 self.detach_child(old_parent, slot);
@@ -315,10 +317,7 @@ impl MemoryIndex {
             self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
             self.slots[slot] = Some(record);
             if name_changed {
-                self.by_name
-                    .entry(key.into_boxed_str())
-                    .or_default()
-                    .push(slot as u32);
+                self.names.insert(key.into_boxed_str(), slot as u32);
             }
             return Ok(true);
         }
@@ -348,10 +347,7 @@ impl MemoryIndex {
         self.mark_ngrams(&key);
         self.slot_signatures[slot] = trigram_signature(&key);
         self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
-        self.by_name
-            .entry(key.into_boxed_str())
-            .or_default()
-            .push(slot as u32);
+        self.names.insert(key.into_boxed_str(), slot as u32);
         self.parent_slots[slot] = self.parent_slot(parent_frn).unwrap_or(MISSING_SLOT);
         self.attach_child(parent_frn, slot);
         self.update_waiting_children(frn, slot as u32);
@@ -379,7 +375,8 @@ impl MemoryIndex {
         }
         let name = record.name.clone();
         let parent_frn = record.parent_frn;
-        self.remove_from_name_index(&name, slot);
+        let name_key = name.to_lowercase();
+        self.names.remove(&name_key, slot as u32);
         self.detach_child(parent_frn, slot);
         self.parent_slots[slot] = MISSING_SLOT;
         self.slot_present[slot] = false;
@@ -445,16 +442,6 @@ impl MemoryIndex {
         })
     }
 
-    fn remove_from_name_index(&mut self, name: &str, slot: usize) {
-        let key = name.to_lowercase();
-        if let Some(slots) = self.by_name.get_mut(key.as_str()) {
-            slots.retain(|candidate| *candidate as usize != slot);
-            if slots.is_empty() {
-                self.by_name.remove(key.as_str());
-            }
-        }
-    }
-
     #[cfg(any(test, feature = "invariants"))]
     fn consistency_error(&self) -> Option<&'static str> {
         if self.slot_signatures.len() != self.slots.len() {
@@ -469,7 +456,7 @@ impl MemoryIndex {
         if self.slot_present.len() != self.slots.len() {
             return Some("slot presence count mismatch");
         }
-        if self.by_frn.len() != self.by_name.values().map(SmallVec::len).sum::<usize>() {
+        if self.by_frn.len() != self.names.len() {
             return Some("frn count does not match name buckets");
         }
         for (frn, slot) in self.by_frn.iter() {
@@ -481,10 +468,9 @@ impl MemoryIndex {
                 return Some("slot frn mismatch");
             }
             let key = record.name.to_lowercase();
-            let Some(bucket) = self.by_name.get(key.as_str()) else {
-                return Some("missing name bucket");
-            };
-            if !bucket.contains(&(slot as u32)) {
+            let in_primary = self.names.first(&key) == Some(slot as u32);
+            let in_duplicates = self.names.duplicates(&key).contains(&(slot as u32));
+            if !in_primary && !in_duplicates {
                 return Some("slot missing from name bucket");
             }
             if self.slot_signatures.get(slot).copied() != Some(trigram_signature(&key)) {

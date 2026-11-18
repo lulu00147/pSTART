@@ -87,13 +87,11 @@ fn consistency_error_detects_quad_signature_count_mismatch() {
 fn consistency_error_detects_missing_bucket() {
     let mut index = populated();
     let slot = index.by_frn.get(12).unwrap() as usize;
-    index.by_name.remove("report.docx");
-    index
-        .by_name
-        .get_mut("annual-report.txt")
-        .unwrap()
-        .push(slot as u32);
-    assert_eq!(index.consistency_error(), Some("missing name bucket"));
+    index.names.remove("report.docx", slot as u32);
+    assert_eq!(
+        index.consistency_error(),
+        Some("frn count does not match name buckets")
+    );
 }
 
 #[test]
@@ -127,9 +125,8 @@ fn consistency_error_detects_bucket_without_slot() {
     let mut index = populated();
     let slot = index.by_frn.get(12).unwrap() as usize;
     let other = index.by_frn.get(13).unwrap() as usize;
-    let bucket = index.by_name.get_mut("report.docx").unwrap();
-    bucket.retain(|entry| *entry as usize != slot);
-    bucket.push(other as u32);
+    index.names.remove("report.docx", slot as u32);
+    index.names.insert("report.docx".into(), other as u32);
     assert_eq!(
         index.consistency_error(),
         Some("slot missing from name bucket")
@@ -659,6 +656,18 @@ fn duplicate_names_are_allowed() {
 }
 
 #[test]
+fn deleting_primary_duplicate_promotes_overflow_slot() {
+    let mut index = index();
+    index.upsert(record(10, 5, "dup", 1)).unwrap();
+    index.upsert(record(11, 5, "dup", 2)).unwrap();
+    assert!(index.delete(Frn::new(10), 3).unwrap());
+    index.assert_consistent();
+    let outcome = index.search("dup", 10);
+    assert_eq!(outcome.hits.len(), 1);
+    assert_eq!(outcome.hits[0].item.name, "dup");
+}
+
+#[test]
 fn invalid_records_are_rejected() {
     let mut index = index();
     assert!(index.upsert(record(0, 5, "zero", 1)).is_err());
@@ -900,11 +909,7 @@ fn dangling_slots_are_reported_or_skipped() {
     index.by_frn.insert(999, 12_345);
     assert!(index.upsert(record(999, 5, "x.txt", 1)).is_err());
     assert!(index.delete(Frn::new(999), 1).is_err());
-    index
-        .by_name
-        .entry("ghost".into())
-        .or_default()
-        .push(12_345);
+    index.names.insert("ghost".into(), 12_345);
     let outcome = index.search("ghost", 1);
     assert!(outcome.hits.is_empty());
 }
@@ -912,7 +917,7 @@ fn dangling_slots_are_reported_or_skipped() {
 #[test]
 fn removing_an_absent_name_entry_is_a_noop() {
     let mut index = index();
-    index.remove_from_name_index("absent.txt", 0);
+    index.names.remove("absent.txt", 0);
     index.assert_consistent();
 }
 
