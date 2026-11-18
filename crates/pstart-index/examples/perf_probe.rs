@@ -2,12 +2,13 @@
 //!
 //! Usage: cargo run --release -p pstart-index --example perf_probe
 
+use std::env;
 use std::time::Instant;
 
 use pstart_core::{Frn, VolumeId};
 use pstart_index::{FileRecord, MemoryIndex};
 
-const RECORDS: u64 = 100_000;
+const DEFAULT_RECORDS: u64 = 1_000_000;
 const DEPTH: u64 = 200;
 
 fn record(frn: u64, parent: u64, name: String, is_dir: bool) -> FileRecord {
@@ -27,12 +28,16 @@ fn p50(mut samples: Vec<u128>) -> u128 {
 }
 
 fn main() {
+    let records: u64 = env::args()
+        .nth(1)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_RECORDS);
     let volume = VolumeId::new("C:").unwrap();
     let mut index = MemoryIndex::new(volume, "C:\\", Frn::ROOT, 256).unwrap();
 
     let start = Instant::now();
-    for value in 0..RECORDS {
-        let name = format!("file{value:06}.dat");
+    for value in 0..records {
+        let name = format!("file{value:07}.dat");
         index
             .upsert(record(value + 10, Frn::ROOT.get(), name, false))
             .expect("upsert");
@@ -58,7 +63,7 @@ fn main() {
     println!("substring_us={}", p50(samples));
 
     let mut samples = Vec::with_capacity(101);
-    let leaf = RECORDS + 9;
+    let leaf = records + 9;
     for _ in 0..101 {
         let start = Instant::now();
         let path = index.resolve_record_path(Frn::new(leaf)).unwrap();
@@ -67,7 +72,7 @@ fn main() {
     }
     println!("leaf_path_us={}", p50(samples));
 
-    let deep_root = RECORDS + 1000;
+    let deep_root = records + 1000;
     for value in 0..DEPTH {
         let parent = if value == 0 {
             Frn::ROOT.get()

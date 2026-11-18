@@ -24,15 +24,17 @@ use pstart_core::walker::{walk_named, NamedWalkError};
 use trigram::*;
 
 /// Maximum number of prefix candidates inspected for one query.
+/// Bounds worst-case latency; searches report `truncated` when exceeded.
 #[cfg(not(test))]
-pub const MAX_PREFIX_CANDIDATES: usize = 20_000;
+pub const MAX_PREFIX_CANDIDATES: usize = 5_000;
 /// Test-sized prefix candidate budget, so the cap path is cheap to exercise.
 #[cfg(test)]
 pub const MAX_PREFIX_CANDIDATES: usize = 10;
 
 /// Maximum names inspected and records examined by the substring fallback.
+/// Bounds worst-case latency; searches report `truncated` when exceeded.
 #[cfg(not(test))]
-pub const MAX_SUBSTRING_SCAN: usize = 200_000;
+pub const MAX_SUBSTRING_SCAN: usize = 50_000;
 /// Test-sized substring scan budget, so the cap path is cheap to exercise.
 #[cfg(test)]
 pub const MAX_SUBSTRING_SCAN: usize = 100;
