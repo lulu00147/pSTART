@@ -4,7 +4,6 @@
 //! parent FRNs; resolution walks parent links with cycle and depth guards.
 
 use pstart_core::limits::MAX_PATH_UTF16;
-use pstart_core::path_core::{guard_next, GuardError};
 use pstart_core::Frn;
 use thiserror::Error;
 
@@ -93,177 +92,8 @@ fn finish_path(path: String) -> Result<String, PathError> {
     Ok(path)
 }
 
-/// Maximum path-buffer capacity for the production depth (pipeline uses 256).
-const PATH_BUFFER_LIMIT: usize = 256;
-
-#[derive(Clone, Copy)]
-struct PathNode<'a> {
-    parent: Frn,
-    name: &'a str,
-}
-
-trait PathSource<'a> {
-    fn node(&'a self, frn: Frn) -> Option<PathNode<'a>>;
-}
-
-struct LookupSource<'a, L: RecordLookup + ?Sized>(&'a L);
-
-impl<'a, L: RecordLookup + ?Sized> PathSource<'a> for LookupSource<'a, L> {
-    fn node(&'a self, frn: Frn) -> Option<PathNode<'a>> {
-        self.0.record(frn).map(|record| PathNode {
-            parent: Frn::new(record.parent_frn),
-            name: &record.name,
-        })
-    }
-}
-
-#[derive(Clone, Copy)]
-struct PathComponent<'a> {
-    frn: Frn,
-    name: &'a str,
-}
-
-impl<'a> PathComponent<'a> {
-    const EMPTY: Self = Self {
-        frn: Frn::ROOT,
-        name: "",
-    };
-}
-
-struct PathBuffer<'a, const N: usize> {
-    items: [PathComponent<'a>; N],
-    len: usize,
-}
-
-impl<'a, const N: usize> PathBuffer<'a, N> {
-    fn new() -> Self {
-        Self {
-            items: [PathComponent::EMPTY; N],
-            len: 0,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn contains(&self, frn: Frn) -> bool {
-        self.items[..self.len].iter().any(|item| item.frn == frn)
-    }
-
-    fn push(&mut self, component: PathComponent<'a>) -> bool {
-        if self.len == N {
-            return false;
-        }
-        self.items[self.len] = component;
-        self.len += 1;
-        true
-    }
-
-    fn as_slice(&self) -> &[PathComponent<'a>] {
-        &self.items[..self.len]
-    }
-}
-
 pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('\0') && !name.contains('\\') && !name.contains('/')
-}
-
-fn invalid_name(name: &str) -> bool {
-    name.is_empty() || name.contains('\0') || name.contains('\\') || name.contains('/')
-}
-
-fn walk_path<'a, S: PathSource<'a> + ?Sized, const N: usize>(
-    source: &'a S,
-    root_frn: Frn,
-    start: Frn,
-    max_depth: usize,
-    buffer: &mut PathBuffer<'a, N>,
-) -> Result<(), PathError> {
-    let mut current = start;
-    let mut child = start;
-
-    while current.record_number() != root_frn.record_number() {
-        if buffer.len() >= max_depth {
-            return Err(PathError::DepthExceeded { max: max_depth });
-        }
-        if buffer.contains(current) {
-            return Err(PathError::Cycle { frn: current });
-        }
-
-        let node = match source.node(current) {
-            Some(node) => node,
-            None => {
-                return Err(if current == start {
-                    PathError::NotFound { frn: start }
-                } else {
-                    PathError::MissingParent {
-                        child,
-                        parent: current,
-                    }
-                });
-            }
-        };
-
-        if invalid_name(node.name) {
-            return Err(PathError::InvalidName { frn: current });
-        }
-        if !buffer.push(PathComponent {
-            frn: current,
-            name: node.name,
-        }) {
-            return Err(PathError::DepthExceeded { max: max_depth });
-        }
-        child = current;
-        current = node.parent;
-    }
-
-    Ok(())
-}
-
-fn assemble_path<const N: usize>(
-    normalized_root: &str,
-    buffer: &PathBuffer<'_, N>,
-) -> Result<String, PathError> {
-    let mut path = String::from(normalized_root);
-    for component in buffer.as_slice().iter().rev() {
-        if !path.ends_with('\\') {
-            path.push('\\');
-        }
-        path.push_str(component.name);
-    }
-    finish_path(path)
-}
-
-fn resolve_with_source<'a, S: PathSource<'a> + ?Sized, const N: usize>(
-    source: &'a S,
-    normalized_root: &str,
-    root_frn: Frn,
-    frn: Frn,
-    max_depth: usize,
-) -> Result<String, PathError> {
-    debug_assert!(max_depth <= N);
-    let mut buffer = PathBuffer::<N>::new();
-    walk_path(source, root_frn, frn, max_depth, &mut buffer)?;
-    assemble_path(normalized_root, &buffer)
-}
-
-fn resolve_dynamic<L: RecordLookup + ?Sized>(
-    lookup: &L,
-    normalized_root: &str,
-    root_frn: Frn,
-    frn: Frn,
-    max_depth: usize,
-) -> Result<String, PathError> {
-    let components = collect_components(lookup, root_frn, frn, max_depth)?;
-    let mut path = String::from(normalized_root);
-    for component in components.iter().rev() {
-        if !path.ends_with('\\') {
-            path.push('\\');
-        }
-        path.push_str(component);
-    }
-    finish_path(path)
 }
 
 /// Resolve a record's full display path.
@@ -296,26 +126,15 @@ pub fn resolve_path<L: RecordLookup + ?Sized>(
         return finish_path(normalized_root.to_owned());
     }
 
-    let source = LookupSource(lookup);
-    if max_depth <= 2 {
-        resolve_with_source::<_, 2>(&source, normalized_root, root_frn, frn, max_depth)
-    } else if max_depth <= 4 {
-        resolve_with_source::<_, 4>(&source, normalized_root, root_frn, frn, max_depth)
-    } else if max_depth <= 8 {
-        resolve_with_source::<_, 8>(&source, normalized_root, root_frn, frn, max_depth)
-    } else if max_depth <= 64 {
-        resolve_with_source::<_, 64>(&source, normalized_root, root_frn, frn, max_depth)
-    } else if max_depth <= PATH_BUFFER_LIMIT {
-        resolve_with_source::<_, PATH_BUFFER_LIMIT>(
-            &source,
-            normalized_root,
-            root_frn,
-            frn,
-            max_depth,
-        )
-    } else {
-        resolve_dynamic(lookup, normalized_root, root_frn, frn, max_depth)
+    let components = collect_components(lookup, root_frn, frn, max_depth)?;
+    let mut path = String::from(normalized_root);
+    for component in components.iter().rev() {
+        if !path.ends_with('\\') {
+            path.push('\\');
+        }
+        path.push_str(component);
     }
+    finish_path(path)
 }
 
 fn collect_components<L: RecordLookup + ?Sized>(
@@ -330,11 +149,11 @@ fn collect_components<L: RecordLookup + ?Sized>(
     let mut child = frn;
 
     while current.record_number() != root_frn.record_number() {
-        if let Err(error) = guard_next(current.get(), &visited, components.len(), max_depth) {
-            return Err(match error {
-                GuardError::Cycle => PathError::Cycle { frn: current },
-                GuardError::DepthExceeded => PathError::DepthExceeded { max: max_depth },
-            });
+        if components.len() >= max_depth {
+            return Err(PathError::DepthExceeded { max: max_depth });
+        }
+        if visited.contains(&current.get()) {
+            return Err(PathError::Cycle { frn: current });
         }
         visited.push(current.get());
 
@@ -342,11 +161,7 @@ fn collect_components<L: RecordLookup + ?Sized>(
             .record(current)
             .ok_or_else(|| lookup_failure(current, frn, child))?;
 
-        if record.name.is_empty()
-            || record.name.contains('\0')
-            || record.name.contains('\\')
-            || record.name.contains('/')
-        {
+        if !valid_name(&record.name) {
             return Err(PathError::InvalidName { frn: current });
         }
         components.push(&record.name);
@@ -396,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_path_buffer_tier_boundaries() {
+    fn resolve_path_depth_boundaries() {
         for max_depth in [1, 2, 3, 4, 5, 8, 9, 64, 65, 256] {
             let result = resolve_path(&chain(), "C:\\", Frn::ROOT, Frn::new(12), max_depth);
             if max_depth >= 3 {
@@ -408,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_path_dynamic_fallback_matches_tiered_core() {
+    fn resolve_path_unbounded_depth() {
         let lookup = chain();
         assert_eq!(
             resolve_path(&lookup, "C:\\", Frn::ROOT, Frn::new(12), usize::MAX).unwrap(),
@@ -417,29 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn path_buffer_overflow_is_rejected() {
-        let mut buffer = PathBuffer::<1>::new();
-        let component = PathComponent {
-            frn: Frn::ROOT,
-            name: "x",
-        };
-        assert!(buffer.push(component));
-        assert!(!buffer.push(component));
-    }
-
-    #[test]
-    fn walk_path_buffer_overflow_is_depth_error() {
-        let lookup = chain();
-        let source = LookupSource(&lookup);
-        let mut buffer = PathBuffer::<1>::new();
-        assert_eq!(
-            walk_path(&source, Frn::ROOT, Frn::new(12), 2, &mut buffer),
-            Err(PathError::DepthExceeded { max: 2 })
-        );
-    }
-
-    #[test]
-    fn resolve_path_dynamic_reports_missing_and_invalid_cases() {
+    fn resolve_path_reports_missing_and_invalid_cases() {
         assert_eq!(
             resolve_path(&lookup(vec![]), "C:\\", Frn::ROOT, Frn::new(99), usize::MAX),
             Err(PathError::NotFound { frn: Frn::new(99) })
@@ -470,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_path_dynamic_reports_cycle_and_depth() {
+    fn resolve_path_reports_cycle_and_depth() {
         let cycle = lookup(vec![record(10, 11, "a"), record(11, 10, "b")]);
         assert_eq!(
             resolve_path(&cycle, "C:\\", Frn::ROOT, Frn::new(10), usize::MAX),
@@ -489,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn max_depth_above_buffer_uses_fallback() {
+    fn max_depth_resolves_long_chain() {
         let mut records = Vec::new();
         for index in 0..300u64 {
             let parent = if index == 0 { 5 } else { index + 9 };

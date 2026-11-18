@@ -14,34 +14,6 @@ pub enum WalkError {
     MissingParent { node: u32 },
 }
 
-/// Error from the per-step walk guard.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GuardError {
-    /// Current node was already visited.
-    Cycle,
-    /// Depth budget exhausted.
-    DepthExceeded,
-}
-
-/// Guard one step of a parent walk before looking up the next record.
-///
-/// `depth` is the number of components already collected. Returns `Ok(())`
-/// when another lookup is allowed.
-pub fn guard_next(
-    current: u64,
-    visited: &[u64],
-    depth: usize,
-    max_depth: usize,
-) -> Result<(), GuardError> {
-    if depth >= max_depth {
-        return Err(GuardError::DepthExceeded);
-    }
-    if visited.contains(&current) {
-        return Err(GuardError::Cycle);
-    }
-    Ok(())
-}
-
 /// Walk a parent-index chain until `root`, detecting cycles and depth overflow.
 ///
 /// Parent indices are slot indices; this function replaces trait/HashSet based
@@ -403,11 +375,6 @@ mod tests {
     }
 
     #[test]
-    fn depth_guard_rejects_at_limit() {
-        assert_eq!(guard_next(2, &[2], 1, 1), Err(GuardError::DepthExceeded));
-    }
-
-    #[test]
     fn case_insensitive_prefilter_matches_lowercase_semantics() {
         assert!(contains_case_insensitive("REPORT.TXT", "report"));
         assert!(contains_case_insensitive("项目报告.docx", "报告"));
@@ -434,9 +401,6 @@ mod tests {
             walk_parents(&parents, 0, 7, 4),
             Err(WalkError::MissingParent { node: 7 })
         );
-        assert_eq!(guard_next(2, &[2], 0, 4), Err(GuardError::Cycle));
-        assert_eq!(guard_next(2, &[], 4, 4), Err(GuardError::DepthExceeded));
-        assert_eq!(guard_next(2, &[], 0, 4), Ok(()));
     }
 
     #[test]
