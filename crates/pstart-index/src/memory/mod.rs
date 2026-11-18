@@ -9,9 +9,7 @@ use pstart_score::apply_penalty;
 use crate::error::IndexError;
 use crate::model::{FileRecord, IndexEvent};
 use crate::path::{PathError, RecordLookup};
-use crate::score::{
-    score_name, SCORE_DEPTH_PENALTY_MAX, SCORE_DIRECTORY_PENALTY, SCORE_EXACT, SCORE_PREFIX,
-};
+use crate::score::{SCORE_DEPTH_PENALTY_MAX, SCORE_DIRECTORY_PENALTY, SCORE_EXACT, SCORE_PREFIX};
 use pstart_core::text::contains_lowercase_needle;
 
 mod path;

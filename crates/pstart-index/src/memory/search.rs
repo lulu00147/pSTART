@@ -62,7 +62,10 @@ impl MemoryIndex {
             if !contains_lowercase_needle(&record.name, query_lower) {
                 continue;
             }
-            if let Some(score) = score_name(&record.name, query_lower) {
+            let name_lower = record.name.to_lowercase();
+            if let Some(score) =
+                crate::score::score_name_lower(&record.name, &name_lower, query_lower)
+            {
                 candidates.push((score, slot));
             }
         }
@@ -87,18 +90,19 @@ impl MemoryIndex {
             if !name.starts_with(&query_lower) {
                 break;
             }
+            let base = if name == &query_lower {
+                SCORE_EXACT
+            } else {
+                SCORE_PREFIX
+            };
+            let chars = name.chars().count();
             for slot in slots {
                 if candidates.len() >= MAX_PREFIX_CANDIDATES {
                     truncated = true;
                     break;
                 }
-                if let Some(record) = self.slots.get(*slot).and_then(Option::as_ref) {
-                    let base = if name == &query_lower {
-                        SCORE_EXACT
-                    } else {
-                        SCORE_PREFIX
-                    };
-                    let score = apply_penalty(base, record.name.chars().count());
+                if self.slots.get(*slot).and_then(Option::as_ref).is_some() {
+                    let score = apply_penalty(base, chars);
                     candidates.push((score, *slot));
                 }
             }

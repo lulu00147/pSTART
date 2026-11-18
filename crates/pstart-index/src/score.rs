@@ -36,16 +36,19 @@ pub fn score_name(name: &str, query: &str) -> Option<i32> {
     }
     let name_lower = name.to_lowercase();
     let query_lower = query.to_lowercase();
+    score_name_lower(name, &name_lower, &query_lower)
+}
 
+pub(crate) fn score_name_lower(name: &str, name_lower: &str, query_lower: &str) -> Option<i32> {
     let base = if name_lower == query_lower {
         SCORE_EXACT
-    } else if name_lower.starts_with(&query_lower) {
+    } else if name_lower.starts_with(query_lower) {
         SCORE_PREFIX
-    } else if word_prefix(&name_lower, &query_lower) {
+    } else if word_prefix(name_lower, query_lower) {
         SCORE_WORD_PREFIX
-    } else if camel_prefix(name, &query_lower) {
+    } else if camel_prefix(name, query_lower) {
         SCORE_CAMEL_PREFIX
-    } else if name_lower.contains(&query_lower) {
+    } else if name_lower.contains(query_lower) {
         SCORE_SUBSTRING
     } else {
         return None;
