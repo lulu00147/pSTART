@@ -13,7 +13,6 @@ workspace = true
 
 [dependencies]
 pstart-core.workspace = true
-pstart-path-core.workspace = true
 serde.workspace = true
 postcard.workspace = true
 thiserror.workspace = true

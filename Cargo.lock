@@ -700,7 +700,6 @@ dependencies = [
  "memmap2",
  "proptest",
  "pstart-core",
- "pstart-path-core",
  "pstart-score",
  "rusqlite",
  "serde",
@@ -715,7 +714,6 @@ dependencies = [
  "postcard",
  "proptest",
  "pstart-core",
- "pstart-path-core",
  "serde",
  "tempfile",
  "thiserror",
@@ -731,10 +729,6 @@ dependencies = [
  "thiserror",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "pstart-path-core"
-version = "0.1.0"
 
 [[package]]
 name = "pstart-plugins"

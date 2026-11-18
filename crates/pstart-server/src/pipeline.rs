@@ -1117,24 +1117,24 @@ mod tests {
     }
 
     #[test]
-    fn tla_index_transitions_match_pipeline() {
+    fn index_transitions_match_pipeline() {
         let dir = TempDir::new().unwrap();
         let source = FakeSource::new(journal(7, 100), sample_pages());
         let mut pipeline = open_pipeline(&dir, 2);
 
-        // TLA StartScan: Uninitialized -> InitialScan.
+        // StartScan: Uninitialized -> InitialScan.
         assert_eq!(pipeline.state(), SyncState::Uninitialized);
         assert_eq!(
             pipeline.startup_action(&source).unwrap(),
             StartupAction::Scan
         );
 
-        // TLA FinishScan: InitialScan -> CatchUp.
+        // FinishScan: InitialScan -> CatchUp.
         pipeline.initial_scan(&source).unwrap();
         assert_eq!(pipeline.state(), SyncState::CatchUp);
         assert_eq!(pipeline.committed_usn(), 100);
 
-        // TLA GoLive: CatchUp -> LiveSync after consuming the journal tail.
+        // GoLive: CatchUp -> LiveSync after consuming the journal tail.
         source.push_batch(JournalBatch {
             next_usn: 100,
             records: Vec::new(),
@@ -1142,14 +1142,14 @@ mod tests {
         pipeline.catch_up(&source, 4).unwrap();
         assert_eq!(pipeline.state(), SyncState::LiveSync);
 
-        // TLA Reset: journal identity change requires a full scan.
+        // Reset: journal identity change requires a full scan.
         *source.journal.borrow_mut() = journal(8, 100);
         assert_eq!(
             pipeline.startup_action(&source).unwrap(),
             StartupAction::Scan
         );
 
-        // TLA Reset: journal rewind is resettable and re-enters InitialScan.
+        // Reset: journal rewind is resettable and re-enters InitialScan.
         *source.journal.borrow_mut() = journal(7, 80);
         assert!(matches!(
             pipeline.catch_up(&source, 1),

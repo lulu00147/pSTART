@@ -17,7 +17,6 @@ invariants = []
 [dependencies]
 pstart-core.workspace = true
 pstart-score.workspace = true
-pstart-path-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 rusqlite.workspace = true

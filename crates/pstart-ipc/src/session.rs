@@ -4,10 +4,10 @@
 //! identity. The client must still send a compatible `Hello` before any Query
 //! is dispatched. No message field can override the transport identity.
 
-use pstart_core::ErrorCode;
-use pstart_path_core::{
+use pstart_core::path_core::{
     session_step, MessageKind, SessionAction as CoreAction, SessionState as CoreState,
 };
+use pstart_core::ErrorCode;
 
 use crate::error::IpcError;
 use crate::message::IpcMessage;
@@ -385,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn tla_session_invariants_hold_over_three_steps() {
+    fn session_invariants_hold_over_three_steps() {
         fn rank(state: SessionState) -> u8 {
             match state {
                 SessionState::Connected => 0,

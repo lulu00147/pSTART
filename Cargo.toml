@@ -8,7 +8,6 @@ members = [
     "crates/pstart-plugins",
     "crates/pstart-policy",
     "crates/pstart-score",
-    "crates/pstart-path-core",
     "crates/pstart-server",
     "crates/pstart-host",
 ]
@@ -30,7 +29,6 @@ pstart-ntfs = { path = "crates/pstart-ntfs" }
 pstart-plugins = { path = "crates/pstart-plugins" }
 pstart-policy = { path = "crates/pstart-policy" }
 pstart-score = { path = "crates/pstart-score" }
-pstart-path-core = { path = "crates/pstart-path-core" }
 pstart-server = { path = "crates/pstart-server" }
 pstart-host = { path = "crates/pstart-host" }
 
