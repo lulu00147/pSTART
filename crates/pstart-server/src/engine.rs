@@ -312,6 +312,18 @@ impl<S: VolumeSource> ServerEngine<S> {
         })
     }
 
+    /// Whether the engine is running.
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    /// Whether the initial MFT scan is still in progress.
+    #[must_use]
+    pub fn is_initial_scan(&self) -> bool {
+        self.running && self.pipeline.state() == SyncState::InitialScan
+    }
+
     /// Current status snapshot.
     #[must_use]
     pub fn status(&self) -> EngineStatus {

@@ -226,8 +226,7 @@ impl<S: VolumeSource + Send + 'static> ServerRuntime<S> {
                     let engine = worker_engine
                         .lock()
                         .expect("runtime engine lock must not be poisoned");
-                    let status = engine.status();
-                    status.running && status.sync_state == pstart_index::SyncState::InitialScan
+                    engine.is_initial_scan()
                 };
                 thread::sleep(worker_poll_delay(poll_interval, scanning));
                 if worker_stop.load(Ordering::Acquire) {
@@ -240,7 +239,7 @@ impl<S: VolumeSource + Send + 'static> ServerRuntime<S> {
                     let mut engine = worker_engine
                         .lock()
                         .expect("runtime engine lock must not be poisoned");
-                    if engine.status().running {
+                    if engine.is_running() {
                         engine.tick().map(|_| ())
                     } else {
                         engine.start().map(|_| ())
