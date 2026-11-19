@@ -35,7 +35,7 @@ use trigram::*;
 /// Maximum number of prefix candidates inspected for one query.
 /// Bounds worst-case latency; searches report `truncated` when exceeded.
 #[cfg(not(test))]
-pub const MAX_PREFIX_CANDIDATES: usize = 5_000;
+pub const MAX_PREFIX_CANDIDATES: usize = 2_000;
 /// Test-sized prefix candidate budget, so the cap path is cheap to exercise.
 #[cfg(test)]
 pub const MAX_PREFIX_CANDIDATES: usize = 10;
@@ -268,13 +268,27 @@ impl MemoryIndex {
         }
     }
 
+    #[inline]
+    fn slot_name_unchecked(&self, slot: usize) -> &str {
+        // SAFETY: callers only pass slots whose name was appended to the arena
+        // and whose offset/length pair was written together.
+        unsafe {
+            let record = self.slots.get_unchecked(slot);
+            let start = record.name_offset as usize;
+            let length = *self.name_lengths.get_unchecked(slot) as usize;
+            let bytes = self.name_arena.get_unchecked(start..start + length);
+            std::str::from_utf8_unchecked(bytes)
+        }
+    }
+
     fn ref_name(&self, reference: u64) -> Option<&str> {
         let (slot, generation) = name_index::unpack(reference);
         let slot = slot as usize;
         if self.slot_generations.get(slot).copied() != Some(generation) {
             return None;
         }
-        self.slot_name(slot)
+        self.slots.get(slot)?;
+        Some(self.slot_name_unchecked(slot))
     }
 
     fn compare_refs(&self, left: u64, right: u64) -> Ordering {
