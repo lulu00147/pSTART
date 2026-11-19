@@ -539,7 +539,6 @@ impl MemoryIndex {
                 return Ok(false);
             }
             let old_parent = self.parent_frn_for_slot(slot);
-            let key = record.name.to_lowercase();
             if name_changed {
                 let generation = self.slot_generations[slot].wrapping_add(1);
                 self.slot_generations[slot] = generation;
@@ -562,9 +561,9 @@ impl MemoryIndex {
             }
             self.slot_flags[slot] = Self::slot_flags(crate::path::valid_name(&record.name))
                 | if record.is_dir { SLOT_DIRECTORY } else { 0 };
-            self.mark_ngrams(&key);
-            self.slot_signatures[slot] = trigram_signature(&key);
-            self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
+            let (trigram, quadgram) = self.index_name_ngrams(&record.name);
+            self.slot_signatures[slot] = trigram;
+            self.slot_quad_signatures[slot] = quadgram;
             self.slots[slot] = StoredRecord {
                 frn: record.frn,
                 last_usn: record.last_usn,
@@ -580,7 +579,6 @@ impl MemoryIndex {
 
         let parent_frn = record.parent_frn;
         let frn = record.frn;
-        let key = record.name.to_lowercase();
         let name_valid = crate::path::valid_name(&record.name);
         let (name_offset, name_len) = self.append_name(&record.name)?;
         let reused = self.free_slots.last().copied();
@@ -616,9 +614,9 @@ impl MemoryIndex {
             self.names.insert(slot as u32, 1);
         }
         self.by_frn.insert(frn, slot);
-        self.mark_ngrams(&key);
-        self.slot_signatures[slot] = trigram_signature(&key);
-        self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
+        let (trigram, quadgram) = self.index_name_ngrams(&record.name);
+        self.slot_signatures[slot] = trigram;
+        self.slot_quad_signatures[slot] = quadgram;
         self.parent_slots[slot] = self.parent_slot(parent_frn).unwrap_or(MISSING_SLOT);
         if self.parent_slots[slot] == MISSING_SLOT {
             self.missing_parents.insert(slot as u32, parent_frn);
@@ -693,16 +691,54 @@ impl MemoryIndex {
     }
 
     /// Search with a bounded prefix scan and bounded substring fallback.
-    fn mark_ngrams(&mut self, name_lower: &str) {
-        let bytes = name_lower.as_bytes();
-        for window in bytes.windows(3) {
-            let bit = trigram_bit(window);
-            self.trigram_bits[bit / 64] |= 1u64 << (bit % 64);
+    fn index_name_ngrams(&mut self, name: &str) -> (u64, u64) {
+        let mut trigram_signature = 0u64;
+        let mut quadgram_signature = 0u64;
+        if name.is_ascii() {
+            let bytes = name.as_bytes();
+            for window in bytes.windows(3) {
+                let folded = [
+                    window[0].to_ascii_lowercase(),
+                    window[1].to_ascii_lowercase(),
+                    window[2].to_ascii_lowercase(),
+                ];
+                let bit = trigram_bit(&folded);
+                self.trigram_bits[bit / 64] |= 1u64 << (bit % 64);
+                trigram_signature |= 1u64 << (bit & 63);
+            }
+            for window in bytes.windows(4) {
+                let folded = [
+                    window[0].to_ascii_lowercase(),
+                    window[1].to_ascii_lowercase(),
+                    window[2].to_ascii_lowercase(),
+                    window[3].to_ascii_lowercase(),
+                ];
+                let hash = quadgram_hash(&folded);
+                let bit = (hash as usize) & (QUADGRAM_BITS - 1);
+                self.quadgram_bits[bit / 64] |= 1u64 << (bit % 64);
+                quadgram_signature |= 1u64 << (hash & 63);
+            }
+        } else {
+            let lower = name.to_lowercase();
+            let bytes = lower.as_bytes();
+            for window in bytes.windows(3) {
+                let bit = trigram_bit(window);
+                self.trigram_bits[bit / 64] |= 1u64 << (bit % 64);
+                trigram_signature |= 1u64 << (bit & 63);
+            }
+            for window in bytes.windows(4) {
+                let hash = quadgram_hash(window);
+                let bit = (hash as usize) & (QUADGRAM_BITS - 1);
+                self.quadgram_bits[bit / 64] |= 1u64 << (bit % 64);
+                quadgram_signature |= 1u64 << (hash & 63);
+            }
         }
-        for window in bytes.windows(4) {
-            let bit = quadgram_bit(window);
-            self.quadgram_bits[bit / 64] |= 1u64 << (bit % 64);
-        }
+        (trigram_signature, quadgram_signature)
+    }
+
+    #[cfg(test)]
+    fn mark_ngrams(&mut self, name: &str) {
+        self.index_name_ngrams(name);
     }
 
     fn might_contain_substring(&self, query_lower: &str) -> bool {
