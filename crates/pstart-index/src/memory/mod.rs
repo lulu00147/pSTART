@@ -19,7 +19,7 @@ use crate::error::IndexError;
 use crate::model::{FileRecord, IndexEvent};
 use crate::path::{PathError, RecordLookup};
 use crate::score::{SCORE_DEPTH_PENALTY_MAX, SCORE_DIRECTORY_PENALTY, SCORE_EXACT, SCORE_PREFIX};
-use pstart_core::text::contains_lowercase_needle;
+use pstart_core::text::{contains_lowercase_needle, needs_lowercase};
 
 mod path;
 mod search;
@@ -251,6 +251,8 @@ impl MemoryIndex {
             left.bytes()
                 .map(|byte| byte.to_ascii_lowercase())
                 .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
+        } else if !needs_lowercase(left) && !needs_lowercase(right) {
+            left.cmp(right)
         } else {
             left.to_lowercase().cmp(&right.to_lowercase())
         }
@@ -263,6 +265,8 @@ impl MemoryIndex {
                     .bytes()
                     .zip(prefix_lower.bytes())
                     .all(|(left, right)| left.to_ascii_lowercase() == right)
+        } else if !needs_lowercase(name) {
+            name.starts_with(prefix_lower)
         } else {
             name.to_lowercase().starts_with(prefix_lower)
         }
@@ -719,6 +723,21 @@ impl MemoryIndex {
                 quadgram_signature |= 1u64 << (hash & 63);
             }
         } else {
+            if !needs_lowercase(name) {
+                let bytes = name.as_bytes();
+                for window in bytes.windows(3) {
+                    let bit = trigram_bit(window);
+                    self.trigram_bits[bit / 64] |= 1u64 << (bit % 64);
+                    trigram_signature |= 1u64 << (bit & 63);
+                }
+                for window in bytes.windows(4) {
+                    let hash = quadgram_hash(window);
+                    let bit = (hash as usize) & (QUADGRAM_BITS - 1);
+                    self.quadgram_bits[bit / 64] |= 1u64 << (bit % 64);
+                    quadgram_signature |= 1u64 << (hash & 63);
+                }
+                return (trigram_signature, quadgram_signature);
+            }
             let lower = name.to_lowercase();
             let bytes = lower.as_bytes();
             for window in bytes.windows(3) {

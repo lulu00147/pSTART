@@ -10,6 +10,13 @@ pub fn contains_case_insensitive(name: &str, needle: &str) -> bool {
     contains_lowercase_needle(name, &needle_lower)
 }
 
+/// Whether lowercasing would change this string.
+#[must_use]
+pub fn needs_lowercase(text: &str) -> bool {
+    text.chars()
+        .any(|value| value.to_lowercase().next() != Some(value))
+}
+
 /// Case-insensitive substring test with an already-lowercased needle.
 ///
 /// Use this in hot loops to avoid reallocating the needle for every name.
@@ -34,6 +41,9 @@ pub fn contains_lowercase_needle(name: &str, needle_lower: &str) -> bool {
             }
         }
         return false;
+    }
+    if !needs_lowercase(name) {
+        return name.contains(needle_lower);
     }
     name.to_lowercase().contains(needle_lower)
 }

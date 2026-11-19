@@ -883,6 +883,22 @@ fn rename_and_delete_update_slot_signature() {
 }
 
 #[test]
+fn chinese_prefix_substring_and_path_work() {
+    let mut index = index();
+    assert!(index.upsert(record(100, 5, "项目报告.docx", 1)).unwrap());
+    assert!(index.upsert(record(101, 5, "年度报告.txt", 2)).unwrap());
+    let prefix = index.search("项目", 10);
+    assert_eq!(prefix.hits.len(), 1);
+    assert_eq!(prefix.hits[0].item.name, "项目报告.docx");
+    let substring = index.search("报告", 10);
+    assert_eq!(substring.hits.len(), 2);
+    assert_eq!(
+        index.resolve_record_path(Frn::new(100)).unwrap(),
+        "C:\\项目报告.docx"
+    );
+}
+
+#[test]
 fn trigram_filter_keeps_all_substring_hits() {
     let mut index = index();
     for (position, name) in ["notepad.exe", "项目报告.docx", "annual-report.txt"]

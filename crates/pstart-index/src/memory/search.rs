@@ -65,8 +65,9 @@ impl MemoryIndex {
             if !contains_lowercase_needle(name, query_lower) {
                 continue;
             }
-            let name_lower = name.to_lowercase();
-            if let Some(score) = crate::score::score_name_lower(name, &name_lower, query_lower) {
+            let lowered = needs_lowercase(name).then(|| name.to_lowercase());
+            let name_lower = lowered.as_deref().unwrap_or(name);
+            if let Some(score) = crate::score::score_name_lower(name, name_lower, query_lower) {
                 candidates.push((score, slot));
             }
         }
