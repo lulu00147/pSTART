@@ -98,8 +98,8 @@ mod host {
     const SMOKE_TIMER: usize = 1;
     const QUERY_TIMER: usize = 2;
     const QUERY_POLL_TIMER: usize = 3;
-    const QUERY_DEBOUNCE_MS: u32 = 120;
-    const QUERY_POLL_MS: u32 = 50;
+    const QUERY_DEBOUNCE_MS: u32 = 80;
+    const QUERY_POLL_MS: u32 = 16;
     const NAV_UP: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
     const NAV_DOWN: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 2;
     const NAV_ENTER: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 3;
@@ -630,10 +630,7 @@ mod host {
             thread::spawn(move || {
                 let result = Client::connect(&path).and_then(|mut client| {
                     let mut response = client.query(&text, limit)?;
-                    let syncing = client
-                        .status()
-                        .map(|status| status.is_syncing)
-                        .unwrap_or(false);
+                    let syncing = false;
                     if env::var("PSTART_APP_SEARCH").map_or(true, |value| value != "0") {
                         let app_items = if let Some(plugin) = &app_plugin {
                             match plugin.runtime.run_text_host_timeout(

@@ -336,11 +336,13 @@ mod smoke {
                 if let Ok(iterations) = value.parse::<usize>() {
                     if iterations > 0 && count > 0 {
                         let mut samples = Vec::with_capacity(iterations);
+                        let bench_query = std::env::var("PSTART_UI_BENCH_QUERY")
+                            .unwrap_or_else(|_| "explorer.exe".to_owned());
                         for _ in 0..iterations {
                             send_text(edit, "");
                             wait_title_count(hwnd, 0, Duration::from_secs(3))?;
                             let started = Instant::now();
-                            send_text(edit, "explorer.exe");
+                            send_text(edit, &bench_query);
                             wait_title_count(hwnd, count, Duration::from_secs(3))?;
                             samples.push(started.elapsed().as_micros());
                         }
