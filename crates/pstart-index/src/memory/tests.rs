@@ -128,7 +128,7 @@ fn consistency_error_detects_bucket_without_slot() {
     index.names.forget(slot as u32);
     index
         .names
-        .insert(other as u32, index.slot_generations[other]);
+        .insert(other as u32, index.slots[other].name_offset);
     assert_eq!(
         index.consistency_error(),
         Some("slot missing from name bucket")

@@ -120,7 +120,6 @@ pub struct MemoryIndex {
     free_slots: Vec<u32>,
     by_frn: FrnMap,
     names: NameIndex,
-    slot_generations: Vec<u32>,
     parent_slots: Vec<u32>,
     slot_flags: Vec<u8>,
     children: HashMap<u64, SmallVec<[u32; 2]>>,
@@ -166,7 +165,6 @@ impl MemoryIndex {
             free_slots: Vec::new(),
             by_frn: FrnMap::new(),
             names: NameIndex::default(),
-            slot_generations: Vec::new(),
             parent_slots: Vec::new(),
             slot_flags: Vec::new(),
             children: HashMap::new(),
@@ -232,8 +230,7 @@ impl MemoryIndex {
                 let _ = slot;
             }
         }
-        report.by_name =
-            self.names.bytes() + self.slot_generations.capacity() * std::mem::size_of::<u32>();
+        report.by_name = self.names.bytes();
         for children in self.children.values() {
             report.children += children.capacity() * std::mem::size_of::<u32>()
                 + std::mem::size_of::<(u64, SmallVec<[u32; 2]>)>()
@@ -273,9 +270,9 @@ impl MemoryIndex {
     }
 
     fn ref_name(&self, reference: u64) -> Option<&str> {
-        let (slot, generation) = name_index::unpack(reference);
+        let (slot, offset) = name_index::unpack(reference);
         let slot = slot as usize;
-        if self.slot_generations.get(slot).copied() != Some(generation) {
+        if self.slots.get(slot)?.name_offset != offset {
             return None;
         }
         self.slot_name(slot)
@@ -329,7 +326,7 @@ impl MemoryIndex {
         let mut references = Vec::with_capacity(self.names.live);
         for slot in 0..self.slots.len() {
             if self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT != 0 {
-                references.push(name_index::pack(slot as u32, self.slot_generations[slot]));
+                references.push(name_index::pack(slot as u32, self.slots[slot].name_offset));
             } else {
                 self.slots[slot] = StoredRecord::default();
                 self.name_lengths[slot] = 0;
@@ -362,19 +359,26 @@ impl MemoryIndex {
         self.name_arena = compacted;
     }
 
+    fn refresh_name_offsets(&mut self) {
+        for reference in self.names.sorted.iter_mut().chain(&mut self.names.dirty) {
+            let slot = name_index::unpack(*reference).0 as usize;
+            *reference = name_index::pack(slot as u32, self.slots[slot].name_offset);
+        }
+    }
+
     /// Merge pending name changes into the sorted index.
     pub fn compact_names(&mut self) {
-        if self.names.needs_rebuild || self.names.pending_dead > 4096 {
+        if self.names.needs_rebuild || self.names.pending_dead > 0 {
             self.rebuild_names();
         } else if !self.names.dirty.is_empty() {
             self.merge_dirty_names();
         }
         self.compact_arena();
+        self.refresh_name_offsets();
         self.names.sorted.shrink_to_fit();
         self.names.dirty.shrink_to_fit();
         self.slots.shrink_to_fit();
         self.name_lengths.shrink_to_fit();
-        self.slot_generations.shrink_to_fit();
         self.parent_slots.shrink_to_fit();
         self.slot_flags.shrink_to_fit();
         self.slot_signatures.shrink_to_fit();
@@ -526,11 +530,6 @@ impl MemoryIndex {
                 return Ok(false);
             }
             let old_parent = self.parent_frn_for_slot(slot);
-            if name_changed {
-                let generation = self.slot_generations[slot].wrapping_add(1);
-                self.slot_generations[slot] = generation;
-                self.names.rename(slot as u32, generation);
-            }
             if old_parent != record.parent_frn {
                 self.detach_child(old_parent, slot);
                 self.attach_child(record.parent_frn, slot);
@@ -540,6 +539,9 @@ impl MemoryIndex {
             } else {
                 (stored.name_offset, self.name_lengths[slot] as usize)
             };
+            if name_changed {
+                self.names.rename(slot as u32, name_offset);
+            }
             self.parent_slots[slot] = self.parent_slot(record.parent_frn).unwrap_or(MISSING_SLOT);
             if self.parent_slots[slot] == MISSING_SLOT {
                 self.missing_parents.insert(slot as u32, record.parent_frn);
@@ -593,12 +595,9 @@ impl MemoryIndex {
         self.slot_flags[slot] =
             Self::slot_flags(name_valid) | if record.is_dir { SLOT_DIRECTORY } else { 0 };
         if reused.is_some() {
-            let generation = self.slot_generations[slot].wrapping_add(1);
-            self.slot_generations[slot] = generation;
-            self.names.reuse(slot as u32, generation);
+            self.names.reuse(slot as u32, name_offset);
         } else {
-            self.slot_generations.push(1);
-            self.names.insert(slot as u32, 1);
+            self.names.insert(slot as u32, name_offset);
         }
         self.by_frn.insert(frn, slot);
         let (trigram, quadgram) = self.index_name_ngrams(&record.name);
@@ -793,7 +792,7 @@ impl MemoryIndex {
                 return Some("slot name missing");
             };
             let key = name.to_lowercase();
-            let reference = name_index::pack(slot as u32, self.slot_generations[slot]);
+            let reference = name_index::pack(slot as u32, record.name_offset);
             if !self.names.contains(reference) {
                 return Some("slot missing from name bucket");
             }

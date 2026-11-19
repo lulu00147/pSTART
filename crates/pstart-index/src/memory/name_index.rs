@@ -1,9 +1,9 @@
 //! Slot-based name order: sorted slots plus a pending delta.
 
-/// A slot plus the generation of its name. Reused slots get a new generation,
-/// which invalidates older sorted references without a removal scan.
-pub(crate) fn pack(slot: u32, generation: u32) -> u64 {
-    u64::from(slot) | (u64::from(generation) << 32)
+/// A slot plus its current name-arena offset. Renames and slot reuse write a
+/// new offset, which invalidates older sorted references without a removal scan.
+pub(crate) fn pack(slot: u32, name_offset: u32) -> u64 {
+    u64::from(slot) | (u64::from(name_offset) << 32)
 }
 
 pub(crate) fn unpack(reference: u64) -> (u32, u32) {
@@ -21,18 +21,18 @@ pub(crate) struct NameIndex {
 }
 
 impl NameIndex {
-    pub(crate) fn insert(&mut self, slot: u32, generation: u32) {
-        self.dirty.push(pack(slot, generation));
+    pub(crate) fn insert(&mut self, slot: u32, name_offset: u32) {
+        self.dirty.push(pack(slot, name_offset));
         self.live += 1;
     }
 
-    pub(crate) fn rename(&mut self, slot: u32, generation: u32) {
-        self.dirty.push(pack(slot, generation));
+    pub(crate) fn rename(&mut self, slot: u32, name_offset: u32) {
+        self.dirty.push(pack(slot, name_offset));
         self.needs_rebuild = true;
     }
 
-    pub(crate) fn reuse(&mut self, slot: u32, generation: u32) {
-        self.dirty.push(pack(slot, generation));
+    pub(crate) fn reuse(&mut self, slot: u32, name_offset: u32) {
+        self.dirty.push(pack(slot, name_offset));
         self.live += 1;
         self.needs_rebuild = true;
     }
