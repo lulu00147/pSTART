@@ -41,7 +41,7 @@ impl FrnMap {
         self.keys.len()
     }
 
-    #[allow(dead_code)] // exercised by invariant and unit tests
+    #[cfg(test)]
     pub(crate) fn clear(&mut self) {
         self.keys.clear();
         self.values.clear();
@@ -179,7 +179,7 @@ impl FrnMap {
         }
     }
 
-    #[allow(dead_code)] // exercised by invariant and unit tests
+    #[cfg(any(test, feature = "invariants"))]
     pub(crate) fn iter(&self) -> impl Iterator<Item = (u64, u32)> + '_ {
         self.states
             .iter()

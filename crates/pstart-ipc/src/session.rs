@@ -209,7 +209,10 @@ impl Session {
                     code: ErrorCode::InvalidRequest.as_u32(),
                 })))
             }
-            _ => unreachable!("session decision and message class must agree"),
+            _ => Ok(SessionAction::Close(Some(IpcMessage::Error {
+                request_id: None,
+                code: ErrorCode::InvalidRequest.as_u32(),
+            }))),
         }
     }
 
@@ -234,13 +237,18 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "session decision and message class must agree")]
-    fn mismatched_decision_is_a_programmer_error() {
+    fn mismatched_decision_closes_instead_of_panicking() {
         let mut session = session();
-        let _ = session.apply_decision(
-            CoreAction::Pong,
-            IpcMessage::StatusRequest { request_id: 1 },
-        );
+        let action = session
+            .apply_decision(
+                CoreAction::Pong,
+                IpcMessage::StatusRequest { request_id: 1 },
+            )
+            .unwrap();
+        assert!(matches!(
+            action,
+            SessionAction::Close(Some(IpcMessage::Error { .. }))
+        ));
     }
 
     fn hello() -> IpcMessage {

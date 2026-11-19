@@ -17,7 +17,7 @@ fn main() {
 #[cfg(windows)]
 mod host {
     use std::error::Error;
-    use std::ffi::{OsStr, OsString};
+    use std::ffi::OsString;
     use std::fs;
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -231,9 +231,6 @@ mod host {
             let _ = append_bounded_log(&config.data_dir.join("server.log"), &line);
         }
     }
-
-    #[allow(dead_code)]
-    fn _assert_os_str(_value: &OsStr) {}
 
     #[cfg(test)]
     mod tests {

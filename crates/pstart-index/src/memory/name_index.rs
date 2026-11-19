@@ -42,7 +42,7 @@ impl NameIndex {
         self.pending_dead += 1;
     }
 
-    #[allow(dead_code)] // exercised by invariant and unit tests
+    #[cfg(any(test, feature = "invariants"))]
     pub(crate) fn len(&self) -> usize {
         self.live
     }
@@ -51,7 +51,7 @@ impl NameIndex {
         (self.sorted.capacity() + self.dirty.capacity()) * std::mem::size_of::<u64>()
     }
 
-    #[allow(dead_code)] // exercised by invariant and unit tests
+    #[cfg(any(test, feature = "invariants"))]
     pub(crate) fn contains(&self, reference: u64) -> bool {
         self.sorted.contains(&reference) || self.dirty.contains(&reference)
     }
