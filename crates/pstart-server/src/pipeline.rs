@@ -20,6 +20,9 @@ use thiserror::Error;
 
 /// Maximum file records applied in one SQLite transaction.
 pub const DEFAULT_BATCH_LIMIT: usize = 65536;
+/// Journal read buffer; keeps one tick's record set small enough to bound
+/// query lock wait.
+const JOURNAL_BUFFER_SIZE: usize = 16 * 1024;
 
 /// Faster worker cadence while the initial MFT scan is in progress.
 pub(crate) const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -967,9 +970,12 @@ mod ntfs_source {
             journal: &JournalInfo,
             timeout_ms: u32,
         ) -> Result<JournalBatch, PipelineError> {
-            Ok(self
-                .handle
-                .read_journal(start_usn, timeout_ms, journal, self.buffer_size)?)
+            Ok(self.handle.read_journal(
+                start_usn,
+                timeout_ms,
+                journal,
+                self.buffer_size.min(super::JOURNAL_BUFFER_SIZE),
+            )?)
         }
     }
 }
