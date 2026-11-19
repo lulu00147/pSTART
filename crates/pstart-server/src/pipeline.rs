@@ -770,9 +770,6 @@ impl PendingBatch {
 fn is_system_directory(name: &str) -> bool {
     const DIRECTORIES: &[&str] = &[
         "Windows",
-        "Program Files",
-        "Program Files (x86)",
-        "ProgramData",
         "$Recycle.Bin",
         "System Volume Information",
         "Recovery",
@@ -1015,8 +1012,11 @@ mod tests {
         assert!(pipeline.system_skip(&record(101, 100, "system32", 2, 0, 0x10)));
         assert!(pipeline.system_skip(&record(102, 101, "kernel32.dll", 3, 0, 0)));
         assert!(!pipeline.system_skip(&record(200, 5, "Users", 4, 0, 0x10)));
+        assert!(!pipeline.system_skip(&record(201, 5, "Program Files", 5, 0, 0x10)));
+        assert!(!pipeline.system_skip(&record(202, 5, "Program Files (x86)", 6, 0, 0x10)));
+        assert!(!pipeline.system_skip(&record(203, 5, "ProgramData", 7, 0, 0x10)));
         pipeline.set_include_system_directories(true);
-        assert!(!pipeline.system_skip(&record(103, 5, "Windows", 5, 0, 0x10)));
+        assert!(!pipeline.system_skip(&record(103, 5, "Windows", 8, 0, 0x10)));
     }
 
     fn meta() -> VolumeMeta {
