@@ -18,10 +18,22 @@ pub fn contains_lowercase_needle(name: &str, needle_lower: &str) -> bool {
         return true;
     }
     if name.is_ascii() {
-        return name
-            .as_bytes()
-            .windows(needle_lower.len())
-            .any(|window| window.eq_ignore_ascii_case(needle_lower.as_bytes()));
+        let haystack = name.as_bytes();
+        let needle = needle_lower.as_bytes();
+        if needle.len() > haystack.len() {
+            return false;
+        }
+        let first = needle[0].to_ascii_lowercase();
+        let last_start = haystack.len() - needle.len();
+        for start in 0..=last_start {
+            if haystack[start].to_ascii_lowercase() != first {
+                continue;
+            }
+            if haystack[start..start + needle.len()].eq_ignore_ascii_case(needle) {
+                return true;
+            }
+        }
+        return false;
     }
     name.to_lowercase().contains(needle_lower)
 }
