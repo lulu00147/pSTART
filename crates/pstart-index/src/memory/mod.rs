@@ -321,6 +321,16 @@ impl MemoryIndex {
         } else if !self.names.dirty.is_empty() {
             self.merge_dirty_names();
         }
+        self.names.sorted.shrink_to_fit();
+        self.names.dirty.shrink_to_fit();
+        self.slots.shrink_to_fit();
+        self.slot_generations.shrink_to_fit();
+        self.parent_slots.shrink_to_fit();
+        self.slot_present.shrink_to_fit();
+        self.slot_name_valid.shrink_to_fit();
+        self.slot_signatures.shrink_to_fit();
+        self.slot_quad_signatures.shrink_to_fit();
+        self.free_slots.shrink_to_fit();
     }
 
     /// Return a record by FRN.
