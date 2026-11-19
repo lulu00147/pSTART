@@ -4,7 +4,7 @@
 
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use pstart_core::{Frn, VolumeId};
@@ -15,10 +15,21 @@ fn p50(mut samples: Vec<u128>) -> u128 {
     samples[samples.len() / 2]
 }
 
-fn walk(root: &Path) -> Vec<(PathBuf, PathBuf, bool)> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(directory) = stack.pop() {
+fn main() {
+    let root = env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("C:\\Windows"));
+    let volume = VolumeId::new("C:").unwrap();
+    let mut index = MemoryIndex::new(volume, "C:\\", Frn::ROOT, 256).unwrap();
+
+    let start = Instant::now();
+    let mut index_time = std::time::Duration::ZERO;
+    let mut inserted = 0u64;
+    let mut sample_frn = None;
+    let mut next = 10u64;
+    let mut stack = vec![(root, Frn::ROOT.get())];
+    while let Some((directory, parent_frn)) = stack.pop() {
         let Ok(entries) = fs::read_dir(&directory) else {
             continue;
         };
@@ -26,70 +37,46 @@ fn walk(root: &Path) -> Vec<(PathBuf, PathBuf, bool)> {
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            let path = entry.path();
-            if file_type.is_dir() {
-                stack.push(path.clone());
-            }
-            out.push((path, directory.clone(), file_type.is_dir()));
-        }
-    }
-    out
-}
-
-fn main() {
-    let root = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("C:\\Windows"));
-    let start = Instant::now();
-    let entries = walk(&root);
-    println!(
-        "walk_ms={} files={}",
-        start.elapsed().as_millis(),
-        entries.len()
-    );
-
-    let mut ids = std::collections::HashMap::new();
-    ids.insert(root.clone(), Frn::ROOT.get());
-    let mut next = 10u64;
-    for (path, parent, _) in &entries {
-        if !ids.contains_key(path) {
-            ids.insert(path.clone(), next);
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let frn = next;
             next += 1;
-        }
-        let _ = parent;
-    }
-
-    let volume = VolumeId::new("C:").unwrap();
-    let mut index = MemoryIndex::new(volume, "C:\\", Frn::ROOT, 256).unwrap();
-    let start = Instant::now();
-    let mut inserted = 0u64;
-    for (path, parent, is_dir) in &entries {
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let frn = *ids.get(path).unwrap();
-        let parent_frn = *ids.get(parent).unwrap_or(&Frn::ROOT.get());
-        if index
-            .upsert(FileRecord {
-                frn,
-                parent_frn,
-                name: name.into(),
-                attributes: 0,
-                is_dir: *is_dir,
-                last_usn: frn,
-            })
-            .is_ok()
-        {
-            inserted += 1;
+            let is_dir = file_type.is_dir();
+            if is_dir {
+                stack.push((entry.path(), frn));
+            } else if sample_frn.is_none() {
+                sample_frn = Some(frn);
+            }
+            let upsert_start = Instant::now();
+            let changed = index
+                .upsert(FileRecord {
+                    frn,
+                    parent_frn,
+                    name: name.into(),
+                    attributes: if is_dir { 0x10 } else { 0 },
+                    is_dir,
+                    last_usn: frn,
+                })
+                .is_ok();
+            index_time += upsert_start.elapsed();
+            if changed {
+                inserted += 1;
+            }
         }
     }
     println!(
-        "build_ms={} inserted={}",
+        "total_ms={} index_ms={} walk_ms={} inserted={}",
         start.elapsed().as_millis(),
+        index_time.as_millis(),
+        start.elapsed().saturating_sub(index_time).as_millis(),
         inserted
     );
     index.compact_names();
+    println!(
+        "index_mb={:.1}",
+        index.memory_report().total() as f64 / 1_048_576.0
+    );
 
     for query in ["dll", "config", "system32", "setup"] {
         let mut samples = Vec::with_capacity(101);
@@ -102,8 +89,7 @@ fn main() {
         println!("search_{query}_us={} hits={hits}", p50(samples));
     }
 
-    if let Some((path, _, _)) = entries.iter().find(|(_, _, is_dir)| !*is_dir) {
-        let frn = *ids.get(path).unwrap();
+    if let Some(frn) = sample_frn {
         let mut samples = Vec::with_capacity(101);
         for _ in 0..101 {
             let start = Instant::now();

@@ -9,7 +9,6 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-
 use crate::error::IndexError;
 
 const MAGIC: &[u8; 8] = b"PSTG0001";
