@@ -211,6 +211,8 @@ mod host {
         hwnd: isize,
     ) {
         let mut client = None;
+        let app_search = env::var("PSTART_APP_SEARCH").map_or(true, |value| value != "0");
+        let validate_paths = env::var("PSTART_VALIDATE_PATHS").is_ok_and(|value| value == "1");
         while let Ok(mut request) = requests.recv() {
             while let Ok(next) = requests.try_recv() {
                 request = next;
@@ -236,7 +238,7 @@ mod host {
             let result = (|| -> Result<(ClientResponse, bool), ClientError> {
                 let connection = client.as_mut().expect("worker connection is live");
                 let mut response = connection.query(&request.text, request.limit)?;
-                if env::var("PSTART_APP_SEARCH").map_or(true, |value| value != "0") {
+                if app_search {
                     let app_items = if let Some(plugin) = &app_plugin {
                         match plugin.runtime.run_text_host_timeout(
                             plugin.component.as_slice(),
@@ -260,9 +262,7 @@ mod host {
                         response.truncated = true;
                     }
                 }
-                if env::var("PSTART_VALIDATE_PATHS").map_or(true, |value| value != "0")
-                    && retain_existing_paths(&mut response.items)
-                {
+                if validate_paths && retain_existing_paths(&mut response.items) {
                     response.truncated = true;
                 }
                 Ok((response, false))
