@@ -46,6 +46,8 @@ pub struct EngineConfig {
     pub defer_scan: bool,
     /// Search backend.
     pub search_backend: SearchBackend,
+    /// Include Windows/Program Files/ProgramData trees in the index.
+    pub include_system_directories: bool,
 }
 
 impl EngineConfig {
@@ -60,6 +62,7 @@ impl EngineConfig {
             catch_up_batches: DEFAULT_CATCH_UP_BATCHES,
             defer_scan: false,
             search_backend: SearchBackend::Memory,
+            include_system_directories: false,
         }
     }
 }
@@ -184,6 +187,7 @@ impl<S: VolumeSource> ServerEngine<S> {
             &config.database_path,
             config.batch_limit,
         )?;
+        pipeline.set_include_system_directories(config.include_system_directories);
         if config.search_backend == SearchBackend::Sqlite {
             pipeline.enable_sqlite_search()?;
         }

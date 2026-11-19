@@ -173,6 +173,8 @@ pub struct IndexPipeline {
     sqlite_path: Option<PathBuf>,
     sqlite_usn: u64,
     database_path: PathBuf,
+    include_system_directories: bool,
+    system_excluded: HashSet<u64>,
 }
 
 impl IndexPipeline {
@@ -224,7 +226,40 @@ impl IndexPipeline {
             sqlite_path: None,
             sqlite_usn: 0,
             database_path: database_path.to_owned(),
+            include_system_directories: false,
+            system_excluded: HashSet::new(),
         })
+    }
+
+    /// Include or exclude Windows/Program Files/ProgramData trees.
+    pub fn set_include_system_directories(&mut self, include: bool) {
+        self.include_system_directories = include;
+    }
+
+    fn system_skip(&mut self, record: &UsnRecord) -> bool {
+        if self.include_system_directories {
+            return false;
+        }
+        if self.system_excluded.contains(&record.frn) {
+            if record.is_delete() {
+                self.system_excluded.remove(&record.frn);
+            }
+            return true;
+        }
+        if self.system_excluded.contains(&record.parent_frn) {
+            if record.is_directory() {
+                self.system_excluded.insert(record.frn);
+            }
+            return true;
+        }
+        if Frn::new(record.parent_frn).record_number() != Frn::ROOT.record_number() {
+            return false;
+        }
+        if record.is_directory() && is_system_directory(&record.name) {
+            self.system_excluded.insert(record.frn);
+            return true;
+        }
+        is_system_file(&record.name)
     }
 
     /// Volume identifier.
@@ -631,6 +666,9 @@ impl IndexPipeline {
         if is_reserved_metadata(record) {
             return Ok(());
         }
+        if self.system_skip(record) {
+            return Ok(());
+        }
         let Some(event) = record.to_index_event()? else {
             return Ok(());
         };
@@ -727,6 +765,38 @@ impl PendingBatch {
         self.last_usn = self.last_usn.max(usn);
         self.deletes.push(deleted);
     }
+}
+
+fn is_system_directory(name: &str) -> bool {
+    const DIRECTORIES: &[&str] = &[
+        "Windows",
+        "Program Files",
+        "Program Files (x86)",
+        "ProgramData",
+        "$Recycle.Bin",
+        "System Volume Information",
+        "Recovery",
+        "PerfLogs",
+        "Config.Msi",
+    ];
+    DIRECTORIES
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(name))
+}
+
+fn is_system_file(name: &str) -> bool {
+    const FILES: &[&str] = &[
+        "pagefile.sys",
+        "hiberfil.sys",
+        "swapfile.sys",
+        "DumpStack.log",
+        "DumpStack.log.tmp",
+        "bootmgr",
+        "BOOTNXT",
+    ];
+    FILES
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(name))
 }
 
 fn is_reserved_metadata(record: &UsnRecord) -> bool {
@@ -929,6 +999,24 @@ mod tests {
                     records: Vec::new(),
                 }))
         }
+    }
+
+    #[test]
+    fn system_tree_is_excluded_by_default() {
+        let dir = TempDir::new().unwrap();
+        let mut pipeline = IndexPipeline::open(
+            meta(),
+            "C:\\",
+            &dir.path().join("filter.db"),
+            DEFAULT_BATCH_LIMIT,
+        )
+        .unwrap();
+        assert!(pipeline.system_skip(&record(100, 5, "Windows", 1, 0, 0x10)));
+        assert!(pipeline.system_skip(&record(101, 100, "system32", 2, 0, 0x10)));
+        assert!(pipeline.system_skip(&record(102, 101, "kernel32.dll", 3, 0, 0)));
+        assert!(!pipeline.system_skip(&record(200, 5, "Users", 4, 0, 0x10)));
+        pipeline.set_include_system_directories(true);
+        assert!(!pipeline.system_skip(&record(103, 5, "Windows", 5, 0, 0x10)));
     }
 
     fn meta() -> VolumeMeta {

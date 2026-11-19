@@ -158,6 +158,8 @@ impl ServiceConfig {
             EngineConfig::new(self.volume_meta()?, self.root.clone(), self.database_path());
         config.defer_scan = true;
         config.search_backend = SearchBackend::Sqlite;
+        config.include_system_directories = std::env::var("PSTART_INCLUDE_SYSTEM")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
         if std::env::var("PSTART_SEARCH_BACKEND")
             .is_ok_and(|value| value.eq_ignore_ascii_case("memory"))
         {
