@@ -87,7 +87,7 @@ fn consistency_error_detects_quad_signature_count_mismatch() {
 fn consistency_error_detects_missing_bucket() {
     let mut index = populated();
     let slot = index.by_frn.get(12).unwrap() as usize;
-    index.names.remove("report.docx", slot as u32);
+    index.names.forget(slot as u32);
     assert_eq!(
         index.consistency_error(),
         Some("frn count does not match name buckets")
@@ -125,8 +125,10 @@ fn consistency_error_detects_bucket_without_slot() {
     let mut index = populated();
     let slot = index.by_frn.get(12).unwrap() as usize;
     let other = index.by_frn.get(13).unwrap() as usize;
-    index.names.remove("report.docx", slot as u32);
-    index.names.insert("report.docx".into(), other as u32);
+    index.names.forget(slot as u32);
+    index
+        .names
+        .insert(other as u32, index.slot_generations[other]);
     assert_eq!(
         index.consistency_error(),
         Some("slot missing from name bucket")
@@ -909,7 +911,7 @@ fn dangling_slots_are_reported_or_skipped() {
     index.by_frn.insert(999, 12_345);
     assert!(index.upsert(record(999, 5, "x.txt", 1)).is_err());
     assert!(index.delete(Frn::new(999), 1).is_err());
-    index.names.insert("ghost".into(), 12_345);
+    index.names.insert(12_345, 1);
     let outcome = index.search("ghost", 1);
     assert!(outcome.hits.is_empty());
 }
@@ -917,7 +919,7 @@ fn dangling_slots_are_reported_or_skipped() {
 #[test]
 fn removing_an_absent_name_entry_is_a_noop() {
     let mut index = index();
-    index.names.remove("absent.txt", 0);
+    index.names.forget(0);
     index.assert_consistent();
 }
 

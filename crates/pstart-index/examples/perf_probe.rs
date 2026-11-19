@@ -43,6 +43,9 @@ fn main() {
             .expect("upsert");
     }
     println!("build_ms={}", start.elapsed().as_millis());
+    let start = Instant::now();
+    index.compact_names();
+    println!("compact_ms={}", start.elapsed().as_millis());
     let report = index.memory_report();
     println!(
         "mem_total_mb={:.1} slots={:.1} by_frn={:.1} by_name={:.1} children={:.1} metadata={:.1} bloom={:.1} signatures={:.1} free={:.1}",

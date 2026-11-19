@@ -60,7 +60,7 @@ fn main() {
     drop(connection);
     let sqlite = SqliteSearch::open(&database, &trigram_path, volume).expect("sqlite search");
 
-    let measure = |search: &dyn Fn(&str) -> usize, term: &str| {
+    let measure = |search: &mut dyn FnMut(&str) -> usize, term: &str| {
         let mut samples = Vec::with_capacity(100);
         let mut hits = 0;
         for _ in 0..100 {
@@ -75,12 +75,12 @@ fn main() {
         )
     };
 
-    let memory_search = |term: &str| memory.search(term, 10).hits.len();
-    let sqlite_search = |term: &str| sqlite.search(term, 10).expect("sqlite search").hits.len();
+    let mut memory_search = |term: &str| memory.search(term, 10).hits.len();
+    let mut sqlite_search = |term: &str| sqlite.search(term, 10).expect("sqlite search").hits.len();
 
     for term in ["notepad", "a", "pad-000", "no", "zzzz-no-match"] {
-        let (memory_p50, memory_p95, memory_hits) = measure(&memory_search, term);
-        let (sqlite_p50, sqlite_p95, sqlite_hits) = measure(&sqlite_search, term);
+        let (memory_p50, memory_p95, memory_hits) = measure(&mut memory_search, term);
+        let (sqlite_p50, sqlite_p95, sqlite_hits) = measure(&mut sqlite_search, term);
         println!(
             "term={term:?} memory={memory_p50}/{memory_p95}us hits={memory_hits} \
              sqlite={sqlite_p50}/{sqlite_p95}us hits={sqlite_hits}"

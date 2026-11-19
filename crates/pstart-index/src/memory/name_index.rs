@@ -1,85 +1,65 @@
-//! Compact lowercase-name index: one inline slot, overflow for duplicates.
+//! Slot-based name order: sorted slots plus a pending delta.
 
-use std::collections::{BTreeMap, HashMap};
+/// A slot plus the generation of its name. Reused slots get a new generation,
+/// which invalidates older sorted references without a removal scan.
+pub(crate) fn pack(slot: u32, generation: u32) -> u64 {
+    u64::from(slot) | (u64::from(generation) << 32)
+}
 
-use smallvec::SmallVec;
+pub(crate) fn unpack(reference: u64) -> (u32, u32) {
+    (reference as u32, (reference >> 32) as u32)
+}
 
-/// Maps lowercased names to slots, inlining the common single-slot case.
+/// Holds slot references ordered by lowercase name.
 #[derive(Debug, Default)]
 pub(crate) struct NameIndex {
-    primary: BTreeMap<Box<str>, u32>,
-    duplicates: HashMap<Box<str>, SmallVec<[u32; 2]>>,
+    pub(crate) sorted: Vec<u64>,
+    pub(crate) dirty: Vec<u64>,
+    pub(crate) live: usize,
+    pub(crate) pending_dead: usize,
+    pub(crate) needs_rebuild: bool,
 }
 
 impl NameIndex {
-    pub(crate) fn insert(&mut self, key: Box<str>, slot: u32) {
-        match self.primary.entry(key) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(slot);
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                if *entry.get() != slot {
-                    let duplicate_key = entry.key().clone();
-                    self.duplicates.entry(duplicate_key).or_default().push(slot);
-                }
-                let _ = entry.get_mut();
-            }
-        }
+    pub(crate) fn insert(&mut self, slot: u32, generation: u32) {
+        self.dirty.push(pack(slot, generation));
+        self.live += 1;
     }
 
-    pub(crate) fn remove(&mut self, key: &str, slot: u32) {
-        if let Some(duplicates) = self.duplicates.get_mut(key) {
-            if let Some(position) = duplicates.iter().position(|value| *value == slot) {
-                duplicates.swap_remove(position);
-                if duplicates.is_empty() {
-                    self.duplicates.remove(key);
-                }
-                return;
-            }
-            if self.primary.get(key) == Some(&slot) {
-                let promoted = duplicates.swap_remove(0);
-                if duplicates.is_empty() {
-                    self.duplicates.remove(key);
-                }
-                self.primary.insert(key.into(), promoted);
-                return;
-            }
-        }
-        if self.primary.get(key) == Some(&slot) {
-            self.primary.remove(key);
-        }
+    pub(crate) fn rename(&mut self, slot: u32, generation: u32) {
+        self.dirty.push(pack(slot, generation));
+        self.needs_rebuild = true;
     }
 
-    #[allow(dead_code)] // exercised by invariant and unit tests
-    pub(crate) fn first(&self, key: &str) -> Option<u32> {
-        self.primary.get(key).copied()
+    pub(crate) fn reuse(&mut self, slot: u32, generation: u32) {
+        self.dirty.push(pack(slot, generation));
+        self.live += 1;
+        self.needs_rebuild = true;
     }
 
-    pub(crate) fn duplicates(&self, key: &str) -> &[u32] {
-        self.duplicates.get(key).map_or(&[], SmallVec::as_slice)
-    }
-
-    pub(crate) fn range(
-        &self,
-        prefix: &str,
-    ) -> std::collections::btree_map::Range<'_, Box<str>, u32> {
-        let start: Box<str> = prefix.into();
-        self.primary.range(start..)
-    }
-
-    pub(crate) fn duplicate_bytes(&self) -> usize {
-        self.duplicates
-            .iter()
-            .map(|(key, slots)| key.len() + slots.capacity() * std::mem::size_of::<u32>() + 16)
-            .sum()
+    pub(crate) fn remove(&mut self, _slot: u32) {
+        self.live = self.live.saturating_sub(1);
+        self.pending_dead += 1;
     }
 
     #[allow(dead_code)] // exercised by invariant and unit tests
     pub(crate) fn len(&self) -> usize {
-        self.primary.len() + self.duplicates.values().map(SmallVec::len).sum::<usize>()
+        self.live
     }
 
-    pub(crate) fn primary_entries(&self) -> impl Iterator<Item = (&str, u32)> + '_ {
-        self.primary.iter().map(|(key, slot)| (key.as_ref(), *slot))
+    pub(crate) fn bytes(&self) -> usize {
+        (self.sorted.capacity() + self.dirty.capacity()) * std::mem::size_of::<u64>()
+    }
+
+    #[allow(dead_code)] // exercised by invariant and unit tests
+    pub(crate) fn contains(&self, reference: u64) -> bool {
+        self.sorted.contains(&reference) || self.dirty.contains(&reference)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forget(&mut self, slot: u32) {
+        self.sorted.retain(|reference| unpack(*reference).0 != slot);
+        self.dirty.retain(|reference| unpack(*reference).0 != slot);
+        self.live = self.live.saturating_sub(1);
     }
 }

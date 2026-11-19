@@ -86,29 +86,55 @@ impl MemoryIndex {
         let mut candidates: Vec<(i32, usize)> = Vec::new();
         let mut truncated = false;
 
-        for (name, first) in self.names.range(&query_lower) {
-            if !name.starts_with(&query_lower) {
-                break;
+        let start = self.names.sorted.partition_point(|reference| {
+            self.ref_name(*reference)
+                .is_some_and(|name| Self::lower_cmp(name, &query_lower) == std::cmp::Ordering::Less)
+        });
+        let mut push = |reference: u64| -> bool {
+            let Some(name) = self.ref_name(reference) else {
+                return false;
+            };
+            let (slot, _) = name_index::unpack(reference);
+            let slot = slot as usize;
+            if self.slot_present.get(slot).copied() != Some(true) {
+                return false;
             }
-            let base = if name.as_ref() == query_lower {
+            if candidates.len() >= MAX_PREFIX_CANDIDATES {
+                return true;
+            }
+            let base = if Self::lower_cmp(name, &query_lower) == std::cmp::Ordering::Equal {
                 SCORE_EXACT
             } else {
                 SCORE_PREFIX
             };
             let chars = crate::score::char_count(name);
-            for slot in std::iter::once(*first).chain(self.names.duplicates(name).iter().copied()) {
-                let slot = slot as usize;
-                if candidates.len() >= MAX_PREFIX_CANDIDATES {
+            candidates.push((apply_penalty(base, chars), slot));
+            false
+        };
+        for reference in &self.names.sorted[start..] {
+            let Some(name) = self.ref_name(*reference) else {
+                continue;
+            };
+            if !Self::lower_starts_with(name, &query_lower) {
+                break;
+            }
+            if push(*reference) {
+                truncated = true;
+                break;
+            }
+        }
+        if !truncated {
+            for reference in &self.names.dirty {
+                let Some(name) = self.ref_name(*reference) else {
+                    continue;
+                };
+                if !Self::lower_starts_with(name, &query_lower) {
+                    continue;
+                }
+                if push(*reference) {
                     truncated = true;
                     break;
                 }
-                if self.slots.get(slot).and_then(Option::as_ref).is_some() {
-                    let score = apply_penalty(base, chars);
-                    candidates.push((score, slot));
-                }
-            }
-            if truncated {
-                break;
             }
         }
 

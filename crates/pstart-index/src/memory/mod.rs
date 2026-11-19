@@ -1,6 +1,7 @@
 //! In-memory index with bounded search and FRN path reconstruction.
 
 use smallvec::SmallVec;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 mod frn_map;
@@ -100,6 +101,7 @@ pub struct MemoryIndex {
     free_slots: Vec<u32>,
     by_frn: FrnMap,
     names: NameIndex,
+    slot_generations: Vec<u32>,
     parent_slots: Vec<u32>,
     slot_present: Vec<bool>,
     slot_name_valid: Vec<bool>,
@@ -143,6 +145,7 @@ impl MemoryIndex {
             free_slots: Vec::new(),
             by_frn: FrnMap::new(),
             names: NameIndex::default(),
+            slot_generations: Vec::new(),
             parent_slots: Vec::new(),
             slot_present: Vec::new(),
             slot_name_valid: Vec::new(),
@@ -205,16 +208,119 @@ impl MemoryIndex {
         for record in self.slots.iter().flatten() {
             report.slots += record.name.capacity();
         }
-        for (key, _) in self.names.primary_entries() {
-            report.by_name += key.len() + std::mem::size_of::<(Box<str>, u32)>() + 32;
-        }
-        report.by_name += self.names.duplicate_bytes();
+        report.by_name =
+            self.names.bytes() + self.slot_generations.capacity() * std::mem::size_of::<u32>();
         for children in self.children.values() {
             report.children += children.capacity() * std::mem::size_of::<u32>()
                 + std::mem::size_of::<(u64, SmallVec<[u32; 2]>)>()
                 + 16;
         }
         report
+    }
+
+    fn lower_cmp(left: &str, right: &str) -> Ordering {
+        if left.is_ascii() && right.is_ascii() {
+            left.bytes()
+                .map(|byte| byte.to_ascii_lowercase())
+                .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
+        } else {
+            left.to_lowercase().cmp(&right.to_lowercase())
+        }
+    }
+
+    fn lower_starts_with(name: &str, prefix_lower: &str) -> bool {
+        if name.is_ascii() && prefix_lower.is_ascii() {
+            name.len() >= prefix_lower.len()
+                && name
+                    .bytes()
+                    .zip(prefix_lower.bytes())
+                    .all(|(left, right)| left.to_ascii_lowercase() == right)
+        } else {
+            name.to_lowercase().starts_with(prefix_lower)
+        }
+    }
+
+    fn ref_name(&self, reference: u64) -> Option<&str> {
+        let (slot, generation) = name_index::unpack(reference);
+        let slot = slot as usize;
+        if self.slot_generations.get(slot).copied() != Some(generation) {
+            return None;
+        }
+        self.slots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .map(|record| record.name.as_str())
+    }
+
+    fn compare_refs(&self, left: u64, right: u64) -> Ordering {
+        match (self.ref_name(left), self.ref_name(right)) {
+            (Some(left), Some(right)) => Self::lower_cmp(left, right),
+            _ => Ordering::Equal,
+        }
+    }
+
+    fn merge_dirty_names(&mut self) {
+        if self.names.dirty.is_empty() {
+            return;
+        }
+        let mut dirty = std::mem::take(&mut self.names.dirty);
+        dirty.sort_unstable_by(|left, right| self.compare_refs(*left, *right));
+        let sorted = std::mem::take(&mut self.names.sorted);
+        let mut merged = Vec::with_capacity(sorted.len() + dirty.len());
+        let mut left = sorted.into_iter().peekable();
+        let mut right = dirty.into_iter().peekable();
+        loop {
+            match (left.peek(), right.peek()) {
+                (Some(left_ref), Some(right_ref)) => {
+                    if self.compare_refs(*left_ref, *right_ref) == Ordering::Greater {
+                        if let Some(value) = right.next() {
+                            merged.push(value);
+                        }
+                    } else if let Some(value) = left.next() {
+                        merged.push(value);
+                    }
+                }
+                (Some(_), None) => {
+                    if let Some(value) = left.next() {
+                        merged.push(value);
+                    }
+                }
+                (None, Some(_)) => {
+                    if let Some(value) = right.next() {
+                        merged.push(value);
+                    }
+                }
+                (None, None) => break,
+            }
+        }
+        self.names.sorted = merged;
+    }
+
+    fn rebuild_names(&mut self) {
+        let mut references = Vec::with_capacity(self.names.live);
+        for slot in 0..self.slots.len() {
+            if self.slot_present.get(slot).copied() == Some(true) {
+                if self.slots[slot].is_some() {
+                    references.push(name_index::pack(slot as u32, self.slot_generations[slot]));
+                }
+            } else {
+                self.slots[slot] = None;
+            }
+        }
+        references.sort_unstable_by(|left, right| self.compare_refs(*left, *right));
+        self.names.sorted = references;
+        self.names.dirty.clear();
+        self.names.needs_rebuild = false;
+        self.names.pending_dead = 0;
+    }
+
+    /// Merge pending name changes into the sorted index.
+    pub fn compact_names(&mut self) {
+        if self.names.needs_rebuild || self.names.pending_dead > 4096 {
+            self.rebuild_names();
+        } else if !self.names.dirty.is_empty() {
+            self.merge_dirty_names();
+        }
     }
 
     /// Return a record by FRN.
@@ -302,8 +408,9 @@ impl MemoryIndex {
             let key = record.name.to_lowercase();
             let name_changed = old_name != record.name;
             if name_changed {
-                let old_key = old_name.to_lowercase();
-                self.names.remove(&old_key, slot as u32);
+                let generation = self.slot_generations[slot].wrapping_add(1);
+                self.slot_generations[slot] = generation;
+                self.names.rename(slot as u32, generation);
             }
             if old_parent != record.parent_frn {
                 self.detach_child(old_parent, slot);
@@ -317,7 +424,7 @@ impl MemoryIndex {
             self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
             self.slots[slot] = Some(record);
             if name_changed {
-                self.names.insert(key.into_boxed_str(), slot as u32);
+                self.rebuild_names();
             }
             return Ok(true);
         }
@@ -326,6 +433,7 @@ impl MemoryIndex {
         let frn = record.frn;
         let key = record.name.to_lowercase();
         let name_valid = crate::path::valid_name(&record.name);
+        let reused = self.free_slots.last().copied();
         let slot = if let Some(slot) = self.free_slots.pop() {
             let slot = slot as usize;
             self.slots[slot] = Some(record);
@@ -343,14 +451,26 @@ impl MemoryIndex {
             self.slot_quad_signatures.push(0);
             slot
         };
+        if reused.is_some() {
+            let generation = self.slot_generations[slot].wrapping_add(1);
+            self.slot_generations[slot] = generation;
+            self.names.reuse(slot as u32, generation);
+        } else {
+            self.slot_generations.push(1);
+            self.names.insert(slot as u32, 1);
+        }
         self.by_frn.insert(frn, slot);
         self.mark_ngrams(&key);
         self.slot_signatures[slot] = trigram_signature(&key);
         self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
-        self.names.insert(key.into_boxed_str(), slot as u32);
         self.parent_slots[slot] = self.parent_slot(parent_frn).unwrap_or(MISSING_SLOT);
         self.attach_child(parent_frn, slot);
         self.update_waiting_children(frn, slot as u32);
+        if reused.is_some() {
+            self.rebuild_names();
+        } else if self.names.dirty.len() >= 65536 {
+            self.merge_dirty_names();
+        }
         Ok(true)
     }
 
@@ -373,10 +493,8 @@ impl MemoryIndex {
         if record.last_usn > usn {
             return Ok(false);
         }
-        let name = record.name.clone();
         let parent_frn = record.parent_frn;
-        let name_key = name.to_lowercase();
-        self.names.remove(&name_key, slot as u32);
+        self.names.remove(slot as u32);
         self.detach_child(parent_frn, slot);
         self.parent_slots[slot] = MISSING_SLOT;
         self.slot_present[slot] = false;
@@ -390,7 +508,6 @@ impl MemoryIndex {
             }
         }
         self.by_frn.remove(frn.get());
-        self.slots[slot] = None;
         if let Some(signature) = self.slot_signatures.get_mut(slot) {
             *signature = 0;
         }
@@ -398,6 +515,9 @@ impl MemoryIndex {
             *signature = 0;
         }
         self.free_slots.push(slot as u32);
+        if self.names.pending_dead > 4096 {
+            self.rebuild_names();
+        }
         Ok(true)
     }
 
@@ -468,9 +588,8 @@ impl MemoryIndex {
                 return Some("slot frn mismatch");
             }
             let key = record.name.to_lowercase();
-            let in_primary = self.names.first(&key) == Some(slot as u32);
-            let in_duplicates = self.names.duplicates(&key).contains(&(slot as u32));
-            if !in_primary && !in_duplicates {
+            let reference = name_index::pack(slot as u32, self.slot_generations[slot]);
+            if !self.names.contains(reference) {
                 return Some("slot missing from name bucket");
             }
             if self.slot_signatures.get(slot).copied() != Some(trigram_signature(&key)) {

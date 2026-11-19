@@ -89,6 +89,7 @@ fn main() {
         start.elapsed().as_millis(),
         inserted
     );
+    index.compact_names();
 
     for query in ["dll", "config", "system32", "setup"] {
         let mut samples = Vec::with_capacity(101);
