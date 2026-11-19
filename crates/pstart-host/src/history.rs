@@ -139,6 +139,11 @@ impl HistoryStore {
             SCHEMA_VERSION => {}
             other => return Err(HistoryError::Schema(other)),
         }
+        connection.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 250;",
+        )?;
         Ok(Self { connection, path })
     }
 

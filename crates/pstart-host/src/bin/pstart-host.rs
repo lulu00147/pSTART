@@ -27,7 +27,7 @@ mod host {
     use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use pstart_core::{ErrorCode, FileId, FileItem, Frn, VolumeId};
     use pstart_host::{
@@ -96,10 +96,6 @@ mod host {
     const EDIT_ID: usize = 1001;
     const HOTKEY_ID: i32 = 1;
     const SMOKE_TIMER: usize = 1;
-    const QUERY_TIMER: usize = 2;
-    const QUERY_POLL_TIMER: usize = 3;
-    const QUERY_DEBOUNCE_MS: u32 = 60;
-    const QUERY_POLL_MS: u32 = 16;
     const QUERY_READY: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 11;
     const NAV_UP: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
     const NAV_DOWN: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 2;
@@ -196,7 +192,94 @@ mod host {
 
     struct QueryOutcome {
         generation: u64,
+        worker_us: u128,
         result: Result<(ClientResponse, bool), ClientError>,
+    }
+
+    struct QueryRequest {
+        generation: u64,
+        text: String,
+        limit: u32,
+    }
+
+    fn query_worker(
+        requests: Receiver<QueryRequest>,
+        outcomes: Sender<QueryOutcome>,
+        socket: PathBuf,
+        apps: Arc<Mutex<AppCatalog>>,
+        app_plugin: Option<AppPlugin>,
+        hwnd: isize,
+    ) {
+        let mut client = None;
+        while let Ok(mut request) = requests.recv() {
+            while let Ok(next) = requests.try_recv() {
+                request = next;
+            }
+            let worker_started = Instant::now();
+            if client.is_none() {
+                match Client::connect(&socket) {
+                    Ok(connection) => client = Some(connection),
+                    Err(error) => {
+                        let _ = outcomes.send(QueryOutcome {
+                            generation: request.generation,
+                            worker_us: worker_started.elapsed().as_micros(),
+                            result: Err(error),
+                        });
+                        // SAFETY: hwnd is the host window; PostMessage is safe after destruction.
+                        unsafe {
+                            PostMessageW(hwnd as HWND, QUERY_READY, 0, 0);
+                        }
+                        continue;
+                    }
+                }
+            }
+            let result = (|| -> Result<(ClientResponse, bool), ClientError> {
+                let connection = client.as_mut().expect("worker connection is live");
+                let mut response = connection.query(&request.text, request.limit)?;
+                if env::var("PSTART_APP_SEARCH").map_or(true, |value| value != "0") {
+                    let app_items = if let Some(plugin) = &app_plugin {
+                        match plugin.runtime.run_text_host_timeout(
+                            plugin.component.as_slice(),
+                            &request.text,
+                            Duration::from_millis(500),
+                        ) {
+                            Ok(output) => parse_plugin_apps(&output.text, request.limit as usize),
+                            Err(_) => apps
+                                .lock()
+                                .map(|catalog| {
+                                    catalog.search(&request.text, request.limit as usize)
+                                })
+                                .unwrap_or_default(),
+                        }
+                    } else {
+                        apps.lock()
+                            .map(|catalog| catalog.search(&request.text, request.limit as usize))
+                            .unwrap_or_default()
+                    };
+                    if merge_results(&mut response.items, app_items, request.limit as usize) {
+                        response.truncated = true;
+                    }
+                }
+                if env::var("PSTART_VALIDATE_PATHS").map_or(true, |value| value != "0")
+                    && retain_existing_paths(&mut response.items)
+                {
+                    response.truncated = true;
+                }
+                Ok((response, false))
+            })();
+            if result.is_err() {
+                client = None;
+            }
+            let _ = outcomes.send(QueryOutcome {
+                generation: request.generation,
+                worker_us: worker_started.elapsed().as_micros(),
+                result,
+            });
+            // SAFETY: hwnd is the host window; PostMessage is safe after destruction.
+            unsafe {
+                PostMessageW(hwnd as HWND, QUERY_READY, 0, 0);
+            }
+        }
     }
 
     struct ActionRequest {
@@ -256,9 +339,8 @@ mod host {
     struct State {
         hwnd: HWND,
         edit: HWND,
-        socket_path: PathBuf,
-        query_tx: Sender<QueryOutcome>,
         query_rx: Receiver<QueryOutcome>,
+        query_request_tx: Sender<QueryRequest>,
         scheduler: QueryScheduler,
         calculator: Option<Calculator>,
         calculator_enabled: bool,
@@ -268,12 +350,13 @@ mod host {
         pending_action: Option<ActionRequest>,
         action_roots: Vec<PathBuf>,
         history: Option<HistoryStore>,
+        history_tx: Option<Sender<String>>,
+        query_started: Option<Instant>,
         history_cache: Option<Vec<String>>,
         history_cursor: Option<usize>,
         pending_history_query: Option<String>,
         history_enabled: bool,
         apps: Arc<Mutex<AppCatalog>>,
-        app_plugin: Option<AppPlugin>,
         result_limit: u32,
         theme_dark: bool,
         skin: Skin,
@@ -294,6 +377,24 @@ mod host {
             );
             let (query_tx, query_rx) = mpsc::channel();
             let history = history_path().and_then(|path| HistoryStore::open(&path).ok());
+            let history_tx = history
+                .as_ref()
+                .and_then(|store| store.path().map(std::path::Path::to_path_buf))
+                .map(|path| {
+                    let (sender, receiver) = mpsc::channel::<String>();
+                    thread::spawn(move || {
+                        let Ok(mut store) = HistoryStore::open(&path) else {
+                            return;
+                        };
+                        while let Ok(query) = receiver.recv() {
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map_or(0, |duration| duration.as_millis() as i64);
+                            let _ = store.record(&query, now);
+                        }
+                    });
+                    sender
+                });
             let result_limit = history
                 .as_ref()
                 .and_then(|store| store.get_setting("result_limit").ok().flatten())
@@ -343,12 +444,27 @@ mod host {
             let font = create_ui_font(dpi);
             let apps = Arc::new(Mutex::new(AppCatalog::load(&start_menu_roots())));
             let app_plugin = load_app_plugin(Arc::clone(&apps));
+            let (query_request_tx, query_request_rx) = mpsc::channel();
+            let worker_socket = socket_path.clone();
+            let worker_outcome = query_tx.clone();
+            let worker_apps = Arc::clone(&apps);
+            let worker_plugin = app_plugin.clone();
+            let worker_hwnd = hwnd as isize;
+            thread::spawn(move || {
+                query_worker(
+                    query_request_rx,
+                    worker_outcome,
+                    worker_socket,
+                    worker_apps,
+                    worker_plugin,
+                    worker_hwnd,
+                );
+            });
             Self {
                 hwnd,
                 edit: null_mut(),
-                socket_path,
-                query_tx,
                 query_rx,
+                query_request_tx,
                 scheduler: QueryScheduler::default(),
                 calculator: Calculator::new().ok(),
                 calculator_enabled,
@@ -359,12 +475,13 @@ mod host {
                 pending_action: None,
                 action_roots,
                 history,
+                history_tx,
+                query_started: None,
                 history_cache: None,
                 history_cursor: None,
                 pending_history_query: None,
                 history_enabled,
                 apps,
-                app_plugin,
                 result_limit,
                 theme_dark,
                 skin,
@@ -433,6 +550,7 @@ mod host {
                 return;
             }
             let generation = self.scheduler.begin();
+            self.query_started = Some(Instant::now());
             if let Some(path) = text.strip_prefix("/backup ") {
                 if path.is_empty() {
                     self.status = "Usage: /backup <path>".to_owned();
@@ -623,55 +741,11 @@ mod host {
             self.record_history(text);
             self.pending_history_query = Some(text.to_owned());
             let text = self.resolve_alias(text);
-            let limit = self.result_limit;
-            let path = self.socket_path.clone();
-            let sender = self.query_tx.clone();
-            let apps = Arc::clone(&self.apps);
-            let app_plugin = self.app_plugin.clone();
-            let hwnd = self.hwnd as isize;
-            thread::spawn(move || {
-                let result = Client::connect(&path).and_then(|mut client| {
-                    let mut response = client.query(&text, limit)?;
-                    let syncing = false;
-                    if env::var("PSTART_APP_SEARCH").map_or(true, |value| value != "0") {
-                        let app_items = if let Some(plugin) = &app_plugin {
-                            match plugin.runtime.run_text_host_timeout(
-                                plugin.component.as_slice(),
-                                &text,
-                                Duration::from_millis(500),
-                            ) {
-                                Ok(output) => parse_plugin_apps(&output.text, limit as usize),
-                                Err(_) => apps
-                                    .lock()
-                                    .map(|catalog| catalog.search(&text, limit as usize))
-                                    .unwrap_or_default(),
-                            }
-                        } else {
-                            apps.lock()
-                                .map(|catalog| catalog.search(&text, limit as usize))
-                                .unwrap_or_default()
-                        };
-                        if merge_results(&mut response.items, app_items, limit as usize) {
-                            response.truncated = true;
-                        }
-                    }
-                    if env::var("PSTART_VALIDATE_PATHS").map_or(true, |value| value != "0")
-                        && retain_existing_paths(&mut response.items)
-                    {
-                        response.truncated = true;
-                    }
-                    Ok((response, syncing))
-                });
-                let _ = sender.send(QueryOutcome { generation, result });
-                // SAFETY: hwnd is the host window; PostMessage is safe after destruction.
-                unsafe {
-                    PostMessageW(hwnd as HWND, QUERY_READY, 0, 0);
-                }
+            let _ = self.query_request_tx.send(QueryRequest {
+                generation,
+                text,
+                limit: self.result_limit,
             });
-            // SAFETY: hwnd is live; polling timer drives the UI thread.
-            unsafe {
-                SetTimer(self.hwnd, QUERY_POLL_TIMER, QUERY_POLL_MS, None);
-            }
         }
 
         fn poll_query(&mut self) -> (bool, bool) {
@@ -680,16 +754,12 @@ mod host {
                 if !self.scheduler.accept(outcome.generation) {
                     continue;
                 }
+                let worker_us = outcome.worker_us;
                 match outcome.result {
                     Ok((response, syncing)) => {
                         self.pending_history_query = None;
                         let truncated = response.truncated;
                         self.items = response.items;
-                        if self.history_enabled {
-                            if let Some(history) = &self.history {
-                                let _ = history.rank_items(&mut self.items);
-                            }
-                        }
                         self.selected = (!self.items.is_empty()).then_some(0);
                         self.scroll = 0;
                         self.status = result_status(self.items.len(), syncing, truncated);
@@ -704,6 +774,15 @@ mod host {
                 }
                 self.publish_result_count();
                 changed = true;
+                if let Some(started) = self.query_started.take() {
+                    if std::env::var_os("PSTART_UI_LATENCY").is_some() {
+                        eprintln!(
+                            "ui_latency_us={} worker_us={}",
+                            started.elapsed().as_micros(),
+                            worker_us
+                        );
+                    }
+                }
             }
             (changed, self.scheduler.is_pending())
         }
@@ -722,11 +801,8 @@ mod host {
                     self.history_cursor = None;
                 }
             }
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_millis() as i64);
-            if let Some(history) = &mut self.history {
-                let _ = history.record(query, now);
+            if let Some(sender) = &self.history_tx {
+                let _ = sender.send(query.to_owned());
             }
         }
 
@@ -1662,18 +1738,13 @@ mod host {
                 let id = wparam & 0xffff;
                 let notification = ((wparam >> 16) & 0xffff) as u32;
                 if id == EDIT_ID && notification == EN_CHANGE && !pointer.is_null() {
-                    // Restart the debounce timer; the latest text is queried once
-                    // the user pauses.
-                    // SAFETY: hwnd is live.
-                    if unsafe { SetTimer(hwnd, QUERY_TIMER, QUERY_DEBOUNCE_MS, None) } == 0 {
-                        // SAFETY: pointer is a live State.
-                        unsafe {
-                            (*pointer).query_from_edit();
-                        }
-                        // SAFETY: invalidate the result area.
-                        unsafe {
-                            InvalidateRect(hwnd, null(), 0);
-                        }
+                    // SAFETY: pointer is a live State.
+                    unsafe {
+                        (*pointer).query_from_edit();
+                    }
+                    // SAFETY: invalidate the result area.
+                    unsafe {
+                        InvalidateRect(hwnd, null(), 0);
                     }
                 }
                 0
@@ -1681,51 +1752,12 @@ mod host {
             QUERY_READY => {
                 if !pointer.is_null() {
                     // SAFETY: pointer is a live State.
-                    let (changed, pending) = unsafe { (*pointer).poll_query() };
-                    if !pending {
-                        // SAFETY: timer belongs to this window.
-                        unsafe {
-                            KillTimer(hwnd, QUERY_POLL_TIMER);
-                        }
-                    }
+                    let (changed, _) = unsafe { (*pointer).poll_query() };
                     if changed {
                         // SAFETY: invalidate the result area.
                         unsafe {
                             InvalidateRect(hwnd, null(), 0);
                         }
-                    }
-                }
-                0
-            }
-            WM_TIMER if wparam == QUERY_POLL_TIMER => {
-                if !pointer.is_null() {
-                    // SAFETY: pointer is a live State.
-                    let (changed, pending) = unsafe { (*pointer).poll_query() };
-                    if !pending {
-                        // SAFETY: timer belongs to this window.
-                        unsafe {
-                            KillTimer(hwnd, QUERY_POLL_TIMER);
-                        }
-                    }
-                    if changed {
-                        // SAFETY: invalidate the result area.
-                        unsafe {
-                            InvalidateRect(hwnd, null(), 0);
-                        }
-                    }
-                }
-                0
-            }
-            WM_TIMER if wparam == QUERY_TIMER => {
-                // SAFETY: timer belongs to this window.
-                unsafe {
-                    KillTimer(hwnd, QUERY_TIMER);
-                }
-                if !pointer.is_null() {
-                    // SAFETY: pointer is a live State.
-                    unsafe {
-                        (*pointer).query_from_edit();
-                        InvalidateRect(hwnd, null(), 0);
                     }
                 }
                 0
