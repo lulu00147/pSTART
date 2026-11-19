@@ -611,6 +611,21 @@ impl IndexStore {
     }
 }
 
+/// Count persisted files without opening the writable store.
+pub fn count_records(database: &Path, volume_id: &str) -> Result<u64, IndexError> {
+    let connection = Connection::open_with_flags(
+        database,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(std::time::Duration::from_millis(1000))?;
+    let count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM file_metadata WHERE volume_id = ?1",
+        params![volume_id],
+        |row| row.get(0),
+    )?;
+    u64_of("file_count", count)
+}
+
 #[allow(clippy::collapsible_if)] // sequential conditions keep MC/DC satisfiable
 fn classify_checkpoint(checkpoint: Option<Checkpoint>, observed: u64) -> CheckpointStatus {
     match checkpoint {

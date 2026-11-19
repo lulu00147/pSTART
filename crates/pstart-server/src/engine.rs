@@ -318,6 +318,15 @@ impl<S: VolumeSource> ServerEngine<S> {
         self.running
     }
 
+    /// Whether synchronization is active.
+    #[must_use]
+    pub fn is_syncing(&self) -> bool {
+        !matches!(
+            self.pipeline.state(),
+            SyncState::LiveSync | SyncState::Stopped
+        )
+    }
+
     /// Whether the initial MFT scan is still in progress.
     #[must_use]
     pub fn is_initial_scan(&self) -> bool {

@@ -28,8 +28,8 @@ pub use state::{
     Checkpoint, JournalObservation, SyncEvent, SyncState, Transition, TransitionError, VolumeSync,
 };
 pub use store::{
-    CheckpointStatus, CommitStats, DeletedFrn, IndexStore, PersistBatch, StoredVolumeState,
-    VolumeMeta, SCHEMA_VERSION,
+    count_records, CheckpointStatus, CommitStats, DeletedFrn, IndexStore, PersistBatch,
+    StoredVolumeState, VolumeMeta, SCHEMA_VERSION,
 };
 pub use trigram::{
     delta_directory, TrigramBuilder, TrigramIndex, TrigramSet, MAX_TRIGRAM_CANDIDATES,

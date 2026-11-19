@@ -1,7 +1,7 @@
 //! Resident server runtime: journal worker plus AF_UNIX query listener.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -84,6 +84,7 @@ struct RuntimeBackend<S: VolumeSource> {
     starting: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     volume_id: String,
+    indexed_files: Arc<AtomicU64>,
 }
 
 impl<S: VolumeSource> Clone for RuntimeBackend<S> {
@@ -93,6 +94,7 @@ impl<S: VolumeSource> Clone for RuntimeBackend<S> {
             starting: Arc::clone(&self.starting),
             failed: Arc::clone(&self.failed),
             volume_id: self.volume_id.clone(),
+            indexed_files: Arc::clone(&self.indexed_files),
         }
     }
 }
@@ -159,14 +161,11 @@ impl<S: VolumeSource> QueryBackend for RuntimeBackend<S> {
             });
         }
         let engine = self.engine.lock().map_err(|_| ErrorCode::Internal)?;
-        let status = engine.status();
+        let is_syncing = engine.is_syncing();
         Ok(BackendStatus {
-            volume_id: engine.volume_id().to_owned(),
-            indexed_files: status.indexed_files as u64,
-            is_syncing: !matches!(
-                status.sync_state,
-                pstart_index::SyncState::LiveSync | pstart_index::SyncState::Stopped
-            ),
+            volume_id: self.volume_id.clone(),
+            indexed_files: self.indexed_files.load(Ordering::Relaxed),
+            is_syncing,
         })
     }
 }
@@ -177,6 +176,7 @@ pub struct ServerRuntime<S: VolumeSource + Send + 'static> {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     listener: Option<JoinHandle<()>>,
+    counter: Option<JoinHandle<()>>,
     connections: Arc<Mutex<Vec<ConnectionThread>>>,
     socket_path: PathBuf,
 }
@@ -205,6 +205,9 @@ impl<S: VolumeSource + Send + 'static> ServerRuntime<S> {
             }
             None => None,
         };
+        let count_database = engine_config.database_path.clone();
+        let count_volume = engine_config.volume.volume.as_str().to_owned();
+        let indexed_files = Arc::new(AtomicU64::new(0));
         let engine = ServerEngine::open(engine_config, source)?;
         let volume_id = engine.volume_id().to_owned();
         let engine = Arc::new(Mutex::new(engine));
@@ -268,6 +271,7 @@ impl<S: VolumeSource + Send + 'static> ServerRuntime<S> {
             starting: Arc::clone(&starting),
             failed: Arc::clone(&failed),
             volume_id,
+            indexed_files: Arc::clone(&indexed_files),
         };
         let listener_thread = thread::spawn(move || {
             while !listener_stop.load(Ordering::Acquire) {
@@ -332,12 +336,34 @@ impl<S: VolumeSource + Send + 'static> ServerRuntime<S> {
         starting.store(false, Ordering::Release);
         failed.store(false, Ordering::Release);
         startup_done.store(true, Ordering::Release);
+        let initial_count = engine
+            .lock()
+            .map_err(|_| RuntimeError::LockPoisoned)?
+            .status()
+            .indexed_files as u64;
+        indexed_files.store(initial_count, Ordering::Release);
+        let counter_stop = Arc::clone(&stop);
+        let counter_files = Arc::clone(&indexed_files);
+        let counter = thread::spawn(move || {
+            while !counter_stop.load(Ordering::Acquire) {
+                for _ in 0..10 {
+                    if counter_stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                if let Ok(count) = pstart_index::count_records(&count_database, &count_volume) {
+                    counter_files.store(count, Ordering::Release);
+                }
+            }
+        });
 
         Ok(Self {
             engine,
             stop,
             worker: Some(worker),
             listener: Some(listener_thread),
+            counter: Some(counter),
             connections,
             socket_path: runtime_config.socket_path,
         })
@@ -365,6 +391,9 @@ impl<S: VolumeSource + Send + 'static> ServerRuntime<S> {
         // Wake a blocking accept; the connection is dropped without a session.
         let _ = UnixClient::connect(&self.socket_path);
         if let Some(handle) = self.listener.take() {
+            handle.join().map_err(|_| RuntimeError::ThreadPanicked)?;
+        }
+        if let Some(handle) = self.counter.take() {
             handle.join().map_err(|_| RuntimeError::ThreadPanicked)?;
         }
         drain_connection_threads(&self.connections);
@@ -604,6 +633,7 @@ mod tests {
             starting: Arc::new(AtomicBool::new(true)),
             failed: Arc::new(AtomicBool::new(false)),
             volume_id: "C:".to_owned(),
+            indexed_files: Arc::new(AtomicU64::new(0)),
         };
         assert_eq!(
             QueryBackend::search(&backend, "a", 10).unwrap_err(),
@@ -647,6 +677,7 @@ mod tests {
             starting: Arc::new(AtomicBool::new(false)),
             failed: Arc::new(AtomicBool::new(true)),
             volume_id: "C:".to_owned(),
+            indexed_files: Arc::new(AtomicU64::new(0)),
         };
         assert_eq!(
             QueryBackend::search(&backend, "a", 10).unwrap_err(),
@@ -668,6 +699,7 @@ mod tests {
             starting: Arc::new(AtomicBool::new(false)),
             failed: Arc::new(AtomicBool::new(false)),
             volume_id: "C:".to_owned(),
+            indexed_files: Arc::new(AtomicU64::new(0)),
         };
         let status = QueryBackend::status(&backend).unwrap();
         assert_eq!(status.volume_id, "C:");
