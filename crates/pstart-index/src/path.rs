@@ -233,7 +233,7 @@ mod tests {
         FileRecord {
             frn,
             parent_frn: parent,
-            name: name.to_owned(),
+            name: name.into(),
             attributes: 0,
             is_dir: false,
             last_usn: 1,

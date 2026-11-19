@@ -11,6 +11,7 @@ use frn_map::FrnMap;
 use name_index::NameIndex;
 
 use pstart_core::limits::{MAX_PATH_UTF16, MAX_RESULTS};
+use pstart_core::walker::{SLOT_NAME_VALID, SLOT_PRESENT};
 use pstart_core::{FileId, FileItem, Frn, VolumeId};
 use pstart_score::apply_penalty;
 
@@ -28,7 +29,7 @@ mod trigram;
 
 pub use search::{SearchHit, SearchOutcome};
 
-use pstart_core::walker::{walk_named, NamedWalkError};
+use pstart_core::walker::NamedWalkError;
 use trigram::*;
 
 /// Maximum number of prefix candidates inspected for one query.
@@ -103,8 +104,7 @@ pub struct MemoryIndex {
     names: NameIndex,
     slot_generations: Vec<u32>,
     parent_slots: Vec<u32>,
-    slot_present: Vec<bool>,
-    slot_name_valid: Vec<bool>,
+    slot_flags: Vec<u8>,
     children: HashMap<u64, SmallVec<[u32; 2]>>,
     trigram_bits: Vec<u64>,
     quadgram_bits: Vec<u64>,
@@ -147,8 +147,7 @@ impl MemoryIndex {
             names: NameIndex::default(),
             slot_generations: Vec::new(),
             parent_slots: Vec::new(),
-            slot_present: Vec::new(),
-            slot_name_valid: Vec::new(),
+            slot_flags: Vec::new(),
             children: HashMap::new(),
             trigram_bits: vec![0; TRIGRAM_BITS / 64],
             quadgram_bits: vec![0; QUADGRAM_BITS / 64],
@@ -196,8 +195,7 @@ impl MemoryIndex {
             by_frn: self.by_frn.capacity()
                 * (std::mem::size_of::<u64>() + std::mem::size_of::<u32>() + 1),
             metadata: self.parent_slots.capacity() * std::mem::size_of::<u32>()
-                + self.slot_present.capacity()
-                + self.slot_name_valid.capacity(),
+                + self.slot_flags.capacity(),
             bloom: (self.trigram_bits.capacity() + self.quadgram_bits.capacity())
                 * std::mem::size_of::<u64>(),
             signatures: (self.slot_signatures.capacity() + self.slot_quad_signatures.capacity())
@@ -206,7 +204,7 @@ impl MemoryIndex {
             ..MemoryReport::default()
         };
         for record in self.slots.iter().flatten() {
-            report.slots += record.name.capacity();
+            report.slots += record.name.len();
         }
         report.by_name =
             self.names.bytes() + self.slot_generations.capacity() * std::mem::size_of::<u32>();
@@ -216,6 +214,10 @@ impl MemoryIndex {
                 + 16;
         }
         report
+    }
+
+    fn slot_flags(name_valid: bool) -> u8 {
+        SLOT_PRESENT | if name_valid { SLOT_NAME_VALID } else { 0 }
     }
 
     fn lower_cmp(left: &str, right: &str) -> Ordering {
@@ -249,7 +251,7 @@ impl MemoryIndex {
         self.slots
             .get(slot)
             .and_then(Option::as_ref)
-            .map(|record| record.name.as_str())
+            .map(|record| record.name.as_ref())
     }
 
     fn compare_refs(&self, left: u64, right: u64) -> Ordering {
@@ -299,7 +301,7 @@ impl MemoryIndex {
     fn rebuild_names(&mut self) {
         let mut references = Vec::with_capacity(self.names.live);
         for slot in 0..self.slots.len() {
-            if self.slot_present.get(slot).copied() == Some(true) {
+            if self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT != 0 {
                 if self.slots[slot].is_some() {
                     references.push(name_index::pack(slot as u32, self.slot_generations[slot]));
                 }
@@ -326,8 +328,7 @@ impl MemoryIndex {
         self.slots.shrink_to_fit();
         self.slot_generations.shrink_to_fit();
         self.parent_slots.shrink_to_fit();
-        self.slot_present.shrink_to_fit();
-        self.slot_name_valid.shrink_to_fit();
+        self.slot_flags.shrink_to_fit();
         self.slot_signatures.shrink_to_fit();
         self.slot_quad_signatures.shrink_to_fit();
         self.free_slots.shrink_to_fit();
@@ -427,8 +428,7 @@ impl MemoryIndex {
                 self.attach_child(record.parent_frn, slot);
             }
             self.parent_slots[slot] = self.parent_slot(record.parent_frn).unwrap_or(MISSING_SLOT);
-            self.slot_present[slot] = true;
-            self.slot_name_valid[slot] = crate::path::valid_name(&record.name);
+            self.slot_flags[slot] = Self::slot_flags(crate::path::valid_name(&record.name));
             self.mark_ngrams(&key);
             self.slot_signatures[slot] = trigram_signature(&key);
             self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
@@ -448,15 +448,13 @@ impl MemoryIndex {
             let slot = slot as usize;
             self.slots[slot] = Some(record);
             self.parent_slots[slot] = MISSING_SLOT;
-            self.slot_present[slot] = true;
-            self.slot_name_valid[slot] = name_valid;
+            self.slot_flags[slot] = Self::slot_flags(name_valid);
             slot
         } else {
             let slot = self.slots.len();
             self.slots.push(Some(record));
             self.parent_slots.push(MISSING_SLOT);
-            self.slot_present.push(true);
-            self.slot_name_valid.push(name_valid);
+            self.slot_flags.push(Self::slot_flags(name_valid));
             self.slot_signatures.push(0);
             self.slot_quad_signatures.push(0);
             slot
@@ -507,8 +505,7 @@ impl MemoryIndex {
         self.names.remove(slot as u32);
         self.detach_child(parent_frn, slot);
         self.parent_slots[slot] = MISSING_SLOT;
-        self.slot_present[slot] = false;
-        self.slot_name_valid[slot] = false;
+        self.slot_flags[slot] = 0;
         if let Some(children) = self.children.get(&frn.get()).cloned() {
             for child in children {
                 let child = child as usize;
@@ -580,11 +577,8 @@ impl MemoryIndex {
         if self.slot_quad_signatures.len() != self.slots.len() {
             return Some("slot quadgram signature count mismatch");
         }
-        if self.slot_name_valid.len() != self.slots.len() {
-            return Some("slot name validity count mismatch");
-        }
-        if self.slot_present.len() != self.slots.len() {
-            return Some("slot presence count mismatch");
+        if self.slot_flags.len() != self.slots.len() {
+            return Some("slot state count mismatch");
         }
         if self.by_frn.len() != self.names.len() {
             return Some("frn count does not match name buckets");
@@ -610,12 +604,12 @@ impl MemoryIndex {
             {
                 return Some("slot quadgram signature mismatch");
             }
-            if self.slot_present.get(slot).copied() != Some(true) {
+            let flags = self.slot_flags.get(slot).copied().unwrap_or(0);
+            if flags & SLOT_PRESENT == 0 {
                 return Some("slot presence mismatch");
             }
-            if self.slot_name_valid.get(slot).copied()
-                != Some(crate::path::valid_name(&record.name))
-            {
+            let valid = crate::path::valid_name(&record.name);
+            if (flags & SLOT_NAME_VALID != 0) != valid {
                 return Some("slot name validity mismatch");
             }
         }

@@ -15,7 +15,7 @@ fn record(frn: u64, parent: u64, name: String, is_dir: bool) -> FileRecord {
     FileRecord {
         frn,
         parent_frn: parent,
-        name,
+        name: name.into(),
         attributes: 0,
         is_dir,
         last_usn: frn,

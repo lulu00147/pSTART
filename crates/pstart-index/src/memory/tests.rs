@@ -6,7 +6,7 @@ fn record(frn: u64, parent: u64, name: &str, usn: u64) -> FileRecord {
     FileRecord {
         frn,
         parent_frn: parent,
-        name: name.to_owned(),
+        name: name.into(),
         attributes: 0,
         is_dir: false,
         last_usn: usn,
@@ -209,8 +209,8 @@ fn invalid_name_before_cycle_matches_generic_path() {
     assert!(index.upsert(record(11, 10, "b", 2)).unwrap());
     assert!(index.upsert(record(12, 11, "c", 3)).unwrap());
     let slot = index.by_frn.get(10).unwrap() as usize;
-    index.slots[slot].as_mut().unwrap().name = "bad/name".to_owned();
-    index.slot_name_valid[slot] = false;
+    index.slots[slot].as_mut().unwrap().name = "bad/name".into();
+    index.slot_flags[slot] &= !pstart_core::walker::SLOT_NAME_VALID;
     let indexed = index.resolve_record_path(Frn::new(12));
     let generic =
         crate::path::resolve_path(&index, "C:\\", Frn::ROOT, Frn::new(12), index.max_depth);
@@ -221,20 +221,20 @@ fn invalid_name_before_cycle_matches_generic_path() {
 #[test]
 fn consistency_error_detects_name_validity_count_mismatch() {
     let mut index = populated();
-    index.slot_name_valid.pop();
+    index.slot_flags.pop();
     assert_eq!(
         index.consistency_error(),
-        Some("slot name validity count mismatch")
+        Some("slot state count mismatch")
     );
 }
 
 #[test]
 fn consistency_error_detects_presence_count_mismatch() {
     let mut index = populated();
-    index.slot_present.pop();
+    index.slot_flags.pop();
     assert_eq!(
         index.consistency_error(),
-        Some("slot presence count mismatch")
+        Some("slot state count mismatch")
     );
 }
 
@@ -242,10 +242,10 @@ fn consistency_error_detects_presence_count_mismatch() {
 fn consistency_error_detects_presence_and_name_validity_mismatch() {
     let mut index = populated();
     let slot = index.by_frn.get(12).unwrap() as usize;
-    index.slot_present[slot] = false;
+    index.slot_flags[slot] &= !pstart_core::walker::SLOT_PRESENT;
     assert_eq!(index.consistency_error(), Some("slot presence mismatch"));
-    index.slot_present[slot] = true;
-    index.slot_name_valid[slot] = false;
+    index.slot_flags[slot] |= pstart_core::walker::SLOT_PRESENT;
+    index.slot_flags[slot] &= !pstart_core::walker::SLOT_NAME_VALID;
     assert_eq!(
         index.consistency_error(),
         Some("slot name validity mismatch")
@@ -259,7 +259,7 @@ fn absent_slot_presence_reports_missing_parent() {
     assert!(index.upsert(record(11, 10, "b", 2)).unwrap());
     assert!(index.upsert(record(12, 11, "c", 3)).unwrap());
     let slot = index.by_frn.get(11).unwrap() as usize;
-    index.slot_present[slot] = false;
+    index.slot_flags[slot] &= !pstart_core::walker::SLOT_PRESENT;
     match index.resolve_record_path(Frn::new(12)) {
         Err(PathError::MissingParent { child, .. }) => {
             assert_eq!(child, Frn::new(12));
@@ -436,7 +436,7 @@ fn indexed_and_generic_paths_agree_on_invalid_names() {
         let mut index = index();
         index.upsert(record(12, 5, "base", 1)).unwrap();
         let slot = index.by_frn.get(12).unwrap() as usize;
-        index.slots[slot].as_mut().unwrap().name = name.clone();
+        index.slots[slot].as_mut().unwrap().name = name.clone().into();
         let indexed = index.resolve_record_path(Frn::new(12));
         let generic =
             crate::path::resolve_path(&index, "C:\\", Frn::ROOT, Frn::new(12), index.max_depth);
@@ -449,12 +449,12 @@ fn corrupted_stored_state_is_reported_not_ignored() {
     let mut index = index();
     index.upsert(record(10, 5, "a", 1)).unwrap();
     let slot = index.by_frn.get(10).unwrap() as usize;
-    index.slots[slot].as_mut().unwrap().name = "bad/name".to_owned();
+    index.slots[slot].as_mut().unwrap().name = "bad/name".into();
     assert!(matches!(
         index.resolve_record_path(Frn::new(10)),
         Err(PathError::InvalidName { .. })
     ));
-    index.slots[slot].as_mut().unwrap().name = "a".to_owned();
+    index.slots[slot].as_mut().unwrap().name = "a".into();
     index.children.remove(&5);
     assert!(index.delete(Frn::new(10), 2).unwrap());
 }
@@ -578,7 +578,7 @@ fn case_insensitive_prefilter_matches_lowercase_semantics() {
 fn stale_updates_are_ignored() {
     let mut index = populated();
     assert!(!index.upsert(record(12, 11, "OldName.txt", 1)).unwrap());
-    assert_eq!(index.record(Frn::new(12)).unwrap().name, "Report.docx");
+    assert_eq!(index.record(Frn::new(12)).unwrap().name.as_ref(), "Report.docx");
     index.assert_consistent();
 }
 
@@ -973,7 +973,7 @@ proptest! {
             let value = FileRecord {
                 frn,
                 parent_frn: parent,
-                name: format!("{name}{position}"),
+                name: format!("{name}{position}").into(),
                 attributes: 0,
                 is_dir,
                 last_usn: usn,

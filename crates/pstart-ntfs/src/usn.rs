@@ -149,7 +149,7 @@ impl UsnRecord {
         Ok(FileRecord {
             frn: self.frn,
             parent_frn: self.parent_frn,
-            name: self.name.clone(),
+            name: self.name.clone().into(),
             attributes: self.attributes,
             is_dir: self.is_directory(),
             last_usn: self.usn as u64,

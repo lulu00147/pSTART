@@ -7,7 +7,7 @@ fn record(frn: u64, parent: u64, name: &str, usn: u64) -> FileRecord {
     FileRecord {
         frn,
         parent_frn: parent,
-        name: name.to_owned(),
+        name: name.into(),
         attributes: 0,
         is_dir: false,
         last_usn: usn,

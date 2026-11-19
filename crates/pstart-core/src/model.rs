@@ -62,7 +62,7 @@ mod tests {
     fn item(name: &str, path: &str) -> FileItem {
         FileItem {
             id: FileId::new(VolumeId::new("C:").unwrap(), Frn::new(42)),
-            name: name.to_owned(),
+            name: name.into(),
             path: path.to_owned(),
             attributes: 0,
             is_dir: false,

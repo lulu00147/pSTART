@@ -584,7 +584,7 @@ impl IndexStore {
                     .map(|value| u64_of("parent_frn", value))
                     .transpose()?
                     .unwrap_or(0),
-                name,
+                name: name.into(),
                 attributes: u32::try_from(attributes).map_err(|_| {
                     IndexError::InvalidData(format!("attributes {attributes} out of range"))
                 })?,
@@ -720,7 +720,7 @@ mod tests {
         FileRecord {
             frn,
             parent_frn: parent,
-            name: name.to_owned(),
+            name: name.into(),
             attributes: 0,
             is_dir: false,
             last_usn: usn,
@@ -837,7 +837,7 @@ mod tests {
         assert_eq!(checkpoint.journal_id, 7);
         let records = store.load_records().unwrap();
         assert_eq!(records.len(), 2);
-        assert!(records.iter().any(|value| value.name == "Users"));
+        assert!(records.iter().any(|value| value.name.as_ref() == "Users"));
     }
 
     #[test]
@@ -884,7 +884,7 @@ mod tests {
             .unwrap();
         let records = store.load_records().unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].name, "new.txt");
+        assert_eq!(records[0].name.as_ref(), "new.txt");
     }
 
     #[test]
@@ -981,7 +981,7 @@ mod tests {
     fn invalid_names_are_rejected_before_writing() {
         let mut store = IndexStore::open_in_memory(meta()).unwrap();
         let mut record = record(10, 5, "valid.txt", 2);
-        record.name = "x".repeat(300);
+        record.name = "x".repeat(300).into();
         let result = store.commit_batch(&batch(vec![record], vec![], 5));
         assert!(result.is_err());
         assert_eq!(store.file_count().unwrap(), 0);
@@ -1035,7 +1035,7 @@ mod tests {
         let overflow = FileRecord {
             frn: u64::MAX,
             parent_frn: 5,
-            name: "huge.txt".to_owned(),
+            name: "huge.txt".into(),
             attributes: 0,
             is_dir: false,
             last_usn: 1,

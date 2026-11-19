@@ -964,7 +964,7 @@ mod tests {
             source_info: 0,
             security_id: 0,
             attributes,
-            name: name.to_owned(),
+            name: name.into(),
         }
     }
 
@@ -1276,7 +1276,7 @@ mod tests {
         assert_eq!(report.records, 5);
         assert_eq!(pipeline.store.file_count().unwrap(), 2);
         assert_eq!(
-            pipeline.memory.record(Frn::new(12)).unwrap().name,
+            pipeline.memory.record(Frn::new(12)).unwrap().name.as_ref(),
             "$custom"
         );
         assert!(pipeline.memory.record(Frn::new(10)).is_none());
@@ -1537,7 +1537,7 @@ mod tests {
         *source.journal.borrow_mut() = journal(7, 112);
         pipeline.catch_up(&source, 2).unwrap();
         assert_eq!(
-            pipeline.memory().record(Frn::new(12)).unwrap().name,
+            pipeline.memory().record(Frn::new(12)).unwrap().name.as_ref(),
             "new.txt"
         );
         assert_eq!(pipeline.store.load_records().unwrap().len(), 3);

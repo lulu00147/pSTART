@@ -27,6 +27,61 @@ pub struct NamedWalkFailure {
 /// Order is intentionally depth, cycle, missing parent, invalid name. The
 /// returned prefix contains only nodes whose parent lookup and name validation
 /// both succeeded.
+/// Slot flag: the slot is present in the index.
+pub const SLOT_PRESENT: u8 = 1;
+/// Slot flag: the slot name is valid for path resolution.
+pub const SLOT_NAME_VALID: u8 = 2;
+
+/// Parent walk over packed slot flags.
+pub fn walk_named_flags(
+    parents: &[u32],
+    flags: &[u8],
+    root: u32,
+    start: u32,
+    max_depth: usize,
+) -> Result<Vec<u32>, NamedWalkFailure> {
+    let mut current = start;
+    let mut visited = Vec::new();
+    while current != root {
+        if visited.len() >= max_depth {
+            return Err(NamedWalkFailure {
+                error: NamedWalkError::DepthExceeded,
+                visited,
+            });
+        }
+        if visited.contains(&current) {
+            return Err(NamedWalkFailure {
+                error: NamedWalkError::Cycle { node: current },
+                visited,
+            });
+        }
+        let index = current as usize;
+        if index >= parents.len() {
+            return Err(NamedWalkFailure {
+                error: NamedWalkError::MissingParent { node: current },
+                visited,
+            });
+        }
+        let parent = parents[index];
+        let state = flags.get(index).copied().unwrap_or(0);
+        if state & SLOT_PRESENT == 0 {
+            return Err(NamedWalkFailure {
+                error: NamedWalkError::MissingParent { node: current },
+                visited,
+            });
+        }
+        if state & SLOT_NAME_VALID == 0 {
+            return Err(NamedWalkFailure {
+                error: NamedWalkError::InvalidName { node: current },
+                visited,
+            });
+        }
+        visited.push(current);
+        current = parent;
+    }
+    Ok(visited)
+}
+
 pub fn walk_named(
     parents: &[u32],
     present: &[bool],

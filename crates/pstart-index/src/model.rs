@@ -12,7 +12,7 @@ pub struct FileRecord {
     /// Parent directory FRN; zero for an unattached root.
     pub parent_frn: u64,
     /// File name only.
-    pub name: String,
+    pub name: Box<str>,
     /// Win32 file attributes.
     pub attributes: u32,
     /// Whether this record is a directory.
@@ -63,7 +63,7 @@ mod tests {
         FileRecord {
             frn: 10,
             parent_frn: 5,
-            name: name.to_owned(),
+            name: name.into(),
             attributes: 0,
             is_dir: false,
             last_usn: 1,

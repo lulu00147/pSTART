@@ -520,7 +520,7 @@ mod tests {
             source_info: 0,
             security_id: 0,
             attributes: 0,
-            name: name.to_owned(),
+            name: name.into(),
         }
     }
 

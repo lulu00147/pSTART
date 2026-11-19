@@ -96,7 +96,7 @@ impl MemoryIndex {
             };
             let (slot, _) = name_index::unpack(reference);
             let slot = slot as usize;
-            if self.slot_present.get(slot).copied() != Some(true) {
+            if self.slot_flags.get(slot).copied().unwrap_or(0) & pstart_core::walker::SLOT_PRESENT == 0 {
                 return false;
             }
             if candidates.len() >= MAX_PREFIX_CANDIDATES {
@@ -195,7 +195,7 @@ impl MemoryIndex {
             hits.push(SearchHit {
                 item: FileItem {
                     id: FileId::new(self.volume.clone(), Frn::new(record.frn)),
-                    name: record.name.clone(),
+                    name: record.name.as_ref().into(),
                     path,
                     attributes: record.attributes,
                     is_dir: record.is_dir,

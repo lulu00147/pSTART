@@ -74,7 +74,7 @@ fn main() {
             .upsert(FileRecord {
                 frn,
                 parent_frn,
-                name: name.to_owned(),
+                name: name.into(),
                 attributes: 0,
                 is_dir: *is_dir,
                 last_usn: frn,

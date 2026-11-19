@@ -7,10 +7,9 @@ impl MemoryIndex {
         let Some(start) = self.by_frn.get(frn.get()) else {
             return Err(PathError::NotFound { frn });
         };
-        let slots = match walk_named(
+        let slots = match pstart_core::walker::walk_named_flags(
             &self.parent_slots,
-            &self.slot_present,
-            &self.slot_name_valid,
+            &self.slot_flags,
             ROOT_SLOT,
             start,
             self.max_depth,
@@ -140,6 +139,6 @@ impl MemoryIndex {
         self.slots
             .get(slot)
             .and_then(Option::as_ref)
-            .map_or("", |record| record.name.as_str())
+            .map_or("", |record| record.name.as_ref())
     }
 }
