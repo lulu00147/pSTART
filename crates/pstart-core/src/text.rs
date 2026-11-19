@@ -13,6 +13,9 @@ pub fn contains_case_insensitive(name: &str, needle: &str) -> bool {
 /// Whether lowercasing would change this string.
 #[must_use]
 pub fn needs_lowercase(text: &str) -> bool {
+    if text.is_ascii() {
+        return text.bytes().any(|byte| byte.is_ascii_uppercase());
+    }
     text.chars()
         .any(|value| value.to_lowercase().next() != Some(value))
 }
