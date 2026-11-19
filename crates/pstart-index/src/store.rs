@@ -182,8 +182,10 @@ impl IndexStore {
     fn from_connection(connection: Connection, meta: VolumeMeta) -> Result<Self, IndexError> {
         connection.execute_batch(
             "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=FULL;
+             PRAGMA synchronous=NORMAL;
              PRAGMA foreign_keys=ON;
+             PRAGMA temp_store=MEMORY;
+             PRAGMA cache_size=-20000;
              PRAGMA busy_timeout=5000;",
         )?;
         let mut store = Self { connection, meta };

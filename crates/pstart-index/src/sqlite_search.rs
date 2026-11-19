@@ -48,6 +48,11 @@ impl SqliteSearch {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         connection.pragma_update(None, "query_only", true)?;
+        connection.execute_batch(
+            "PRAGMA temp_store=MEMORY;
+             PRAGMA cache_size=-20000;",
+        )?;
+        connection.set_prepared_statement_cache_capacity(32);
         connection.prepare("SELECT rowid FROM file_metadata LIMIT 0")?;
         Ok(Self {
             connection,
@@ -156,7 +161,7 @@ impl SqliteSearch {
         let cap = (limit.saturating_mul(4)).min(CANDIDATE_CAP) as i64;
         let mut statement = self
             .connection
-            .prepare(
+            .prepare_cached(
                 "SELECT rowid, frn, name, parent_frn, attributes, is_dir
              FROM file_metadata
              WHERE volume_id = ?1
@@ -187,7 +192,7 @@ impl SqliteSearch {
         let mut rows = Vec::new();
         let mut statement = self
             .connection
-            .prepare(
+            .prepare_cached(
                 "SELECT rowid, frn, name, parent_frn, attributes, is_dir
              FROM file_metadata WHERE volume_id = ?1 AND rowid = ?2",
             )
@@ -207,7 +212,7 @@ impl SqliteSearch {
         let pattern = format!("%{}%", escape_like(query_lower));
         let mut statement = self
             .connection
-            .prepare(
+            .prepare_cached(
                 "SELECT rowid, frn, name, parent_frn, attributes, is_dir
              FROM file_metadata
              WHERE volume_id = ?1 AND name LIKE ?2 ESCAPE '\\' COLLATE NOCASE
@@ -254,7 +259,7 @@ impl SqliteSearch {
         let mut values = Vec::with_capacity(frns.len() + 1);
         values.push(Value::Text(self.volume.as_str().to_owned()));
         values.extend(frns.iter().map(|frn| Value::Integer(*frn as i64)));
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let rows = statement.query_map(params_from_iter(values), |row| {
             let root: i64 = row.get(0)?;
             let depth: i64 = row.get(2)?;

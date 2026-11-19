@@ -157,6 +157,9 @@ impl ServiceConfig {
         let mut config =
             EngineConfig::new(self.volume_meta()?, self.root.clone(), self.database_path());
         config.defer_scan = true;
+        // Keep each engine tick short so queries waiting on the engine mutex do
+        // not inherit a full 16-batch journal drain.
+        config.catch_up_batches = 1;
         config.search_backend = SearchBackend::Sqlite;
         config.include_system_directories = std::env::var("PSTART_INCLUDE_SYSTEM")
             .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
