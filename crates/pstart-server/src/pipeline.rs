@@ -175,6 +175,10 @@ pub struct IndexPipeline {
     database_path: PathBuf,
     include_system_directories: bool,
     system_excluded: HashSet<u64>,
+    system_children: HashMap<u64, Vec<u64>>,
+    system_parent: HashMap<u64, u64>,
+    system_state_path: PathBuf,
+    system_state_dirty: bool,
 }
 
 impl IndexPipeline {
@@ -213,6 +217,9 @@ impl IndexPipeline {
                 memory.upsert(record)?;
             }
         }
+        let system_state_path = database_path.with_extension("system-filter");
+        let (system_excluded, system_parent, system_children) =
+            load_system_state(&system_state_path);
         Ok(Self {
             volume: meta.volume,
             root,
@@ -227,13 +234,24 @@ impl IndexPipeline {
             sqlite_usn: 0,
             database_path: database_path.to_owned(),
             include_system_directories: false,
-            system_excluded: HashSet::new(),
+            system_excluded,
+            system_children,
+            system_parent,
+            system_state_path,
+            system_state_dirty: false,
         })
     }
 
     /// Include or exclude Windows/Program Files/ProgramData trees.
     pub fn set_include_system_directories(&mut self, include: bool) {
         self.include_system_directories = include;
+        if include {
+            self.system_excluded.clear();
+            self.system_children.clear();
+            self.system_parent.clear();
+            self.system_state_dirty = true;
+            self.flush_system_state();
+        }
     }
 
     fn system_skip(&mut self, record: &UsnRecord) -> bool {
@@ -242,13 +260,19 @@ impl IndexPipeline {
         }
         if self.system_excluded.contains(&record.frn) {
             if record.is_delete() {
-                self.system_excluded.remove(&record.frn);
+                self.remove_system_subtree(record.frn);
             }
             return true;
         }
         if self.system_excluded.contains(&record.parent_frn) {
             if record.is_directory() {
                 self.system_excluded.insert(record.frn);
+                self.system_parent.insert(record.frn, record.parent_frn);
+                self.system_children
+                    .entry(record.parent_frn)
+                    .or_default()
+                    .push(record.frn);
+                self.system_state_dirty = true;
             }
             return true;
         }
@@ -257,9 +281,43 @@ impl IndexPipeline {
         }
         if record.is_directory() && is_system_directory(&record.name) {
             self.system_excluded.insert(record.frn);
+            self.system_parent.insert(record.frn, record.parent_frn);
+            self.system_children
+                .entry(record.parent_frn)
+                .or_default()
+                .push(record.frn);
+            self.system_state_dirty = true;
             return true;
         }
         is_system_file(&record.name)
+    }
+
+    fn flush_system_state(&mut self) {
+        if !self.system_state_dirty {
+            return;
+        }
+        let mut bytes = Vec::with_capacity(self.system_parent.len() * 16);
+        for (frn, parent) in &self.system_parent {
+            bytes.extend_from_slice(&frn.to_le_bytes());
+            bytes.extend_from_slice(&parent.to_le_bytes());
+        }
+        let temporary = self.system_state_path.with_extension("system-filter.tmp");
+        if std::fs::write(&temporary, bytes).is_ok() {
+            let _ = std::fs::rename(&temporary, &self.system_state_path);
+        }
+        self.system_state_dirty = false;
+    }
+
+    fn remove_system_subtree(&mut self, root: u64) {
+        let mut stack = vec![root];
+        while let Some(frn) = stack.pop() {
+            self.system_excluded.remove(&frn);
+            self.system_parent.remove(&frn);
+            if let Some(children) = self.system_children.remove(&frn) {
+                stack.extend(children);
+            }
+        }
+        self.system_state_dirty = true;
     }
 
     /// Volume identifier.
@@ -720,6 +778,7 @@ impl IndexPipeline {
         })?;
         self.sync.observe_usn(checkpoint_usn);
         self.sync.commit_checkpoint(&checkpoint)?;
+        self.flush_system_state();
         pending.seen.clear();
         pending.last_usn = checkpoint_usn;
         Ok(())
@@ -765,6 +824,29 @@ impl PendingBatch {
         self.last_usn = self.last_usn.max(usn);
         self.deletes.push(deleted);
     }
+}
+
+type SystemState = (HashSet<u64>, HashMap<u64, u64>, HashMap<u64, Vec<u64>>);
+
+fn load_system_state(path: &Path) -> SystemState {
+    let mut excluded = HashSet::new();
+    let mut parent = HashMap::new();
+    let mut children: HashMap<u64, Vec<u64>> = HashMap::new();
+    let Ok(bytes) = std::fs::read(path) else {
+        return (excluded, parent, children);
+    };
+    for chunk in bytes.chunks_exact(16) {
+        let mut frn = [0u8; 8];
+        let mut parent_frn = [0u8; 8];
+        frn.copy_from_slice(&chunk[..8]);
+        parent_frn.copy_from_slice(&chunk[8..]);
+        let frn = u64::from_le_bytes(frn);
+        let parent_frn = u64::from_le_bytes(parent_frn);
+        excluded.insert(frn);
+        parent.insert(frn, parent_frn);
+        children.entry(parent_frn).or_default().push(frn);
+    }
+    (excluded, parent, children)
 }
 
 fn is_system_directory(name: &str) -> bool {
@@ -1011,12 +1093,30 @@ mod tests {
         assert!(pipeline.system_skip(&record(100, 5, "Windows", 1, 0, 0x10)));
         assert!(pipeline.system_skip(&record(101, 100, "system32", 2, 0, 0x10)));
         assert!(pipeline.system_skip(&record(102, 101, "kernel32.dll", 3, 0, 0)));
-        assert!(!pipeline.system_skip(&record(200, 5, "Users", 4, 0, 0x10)));
+        let deleted = record(100, 5, "Windows", 4, USN_REASON_FILE_DELETE, 0x10);
+        assert!(pipeline.system_skip(&deleted));
+        assert!(!pipeline.system_skip(&record(101, 5, "Other", 5, 0, 0x10)));
+        assert!(!pipeline.system_skip(&record(200, 5, "Users", 6, 0, 0x10)));
         assert!(!pipeline.system_skip(&record(201, 5, "Program Files", 5, 0, 0x10)));
         assert!(!pipeline.system_skip(&record(202, 5, "Program Files (x86)", 6, 0, 0x10)));
         assert!(!pipeline.system_skip(&record(203, 5, "ProgramData", 7, 0, 0x10)));
         pipeline.set_include_system_directories(true);
         assert!(!pipeline.system_skip(&record(103, 5, "Windows", 8, 0, 0x10)));
+    }
+
+    #[test]
+    fn system_filter_state_survives_reopen() {
+        let dir = TempDir::new().unwrap();
+        let database = dir.path().join("filter-state.db");
+        {
+            let mut pipeline =
+                IndexPipeline::open(meta(), "C:\\", &database, DEFAULT_BATCH_LIMIT).unwrap();
+            assert!(pipeline.system_skip(&record(100, 5, "Windows", 1, 0, 0x10)));
+            pipeline.flush_system_state();
+        }
+        let mut pipeline =
+            IndexPipeline::open(meta(), "C:\\", &database, DEFAULT_BATCH_LIMIT).unwrap();
+        assert!(pipeline.system_skip(&record(101, 100, "child", 2, 0, 0x10)));
     }
 
     fn meta() -> VolumeMeta {

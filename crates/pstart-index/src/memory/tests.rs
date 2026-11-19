@@ -341,10 +341,13 @@ fn move_and_delete_update_parent_slots() {
     assert!(index.upsert(record(12, 5, "c", 4)).unwrap());
     assert_eq!(index.resolve_record_path(Frn::new(12)).unwrap(), "C:\\c");
     assert!(index.delete(Frn::new(10), 5).unwrap());
-    assert!(matches!(
+    assert_eq!(
         index.resolve_record_path(Frn::new(11)),
-        Err(PathError::MissingParent { .. })
-    ));
+        Err(PathError::MissingParent {
+            child: Frn::new(11),
+            parent: Frn::new(10),
+        })
+    );
     assert!(index.upsert(record(10, 5, "a", 6)).unwrap());
     assert_eq!(index.resolve_record_path(Frn::new(11)).unwrap(), "C:\\a\\b");
     index.assert_consistent();

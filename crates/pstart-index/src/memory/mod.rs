@@ -669,6 +669,7 @@ impl MemoryIndex {
                 let child = child as usize;
                 if self.slot_flags.get(child).copied().unwrap_or(0) & SLOT_PRESENT != 0 {
                     self.parent_slots[child] = MISSING_SLOT;
+                    self.missing_parents.insert(child as u32, frn.get());
                 }
             }
         }
