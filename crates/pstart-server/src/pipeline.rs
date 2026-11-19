@@ -1537,7 +1537,12 @@ mod tests {
         *source.journal.borrow_mut() = journal(7, 112);
         pipeline.catch_up(&source, 2).unwrap();
         assert_eq!(
-            pipeline.memory().record(Frn::new(12)).unwrap().name.as_ref(),
+            pipeline
+                .memory()
+                .record(Frn::new(12))
+                .unwrap()
+                .name
+                .as_ref(),
             "new.txt"
         );
         assert_eq!(pipeline.store.load_records().unwrap().len(), 3);

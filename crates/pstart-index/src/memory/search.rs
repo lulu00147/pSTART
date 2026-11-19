@@ -34,8 +34,13 @@ impl MemoryIndex {
         let mut seen: Vec<usize> = candidates.iter().map(|(_, slot)| *slot).collect();
         seen.sort_unstable();
         let mut scanned = 0usize;
-        for (slot, record) in self.slots.iter().enumerate() {
-            let Some(record) = record.as_ref() else {
+        for slot in 0..self.slots.len() {
+            if self.slot_flags.get(slot).copied().unwrap_or(0) & pstart_core::walker::SLOT_PRESENT
+                == 0
+            {
+                continue;
+            }
+            let Some(name) = self.slot_name(slot) else {
                 continue;
             };
             if seen.binary_search(&slot).is_ok() {
@@ -59,13 +64,11 @@ impl MemoryIndex {
                     continue;
                 }
             }
-            if !contains_lowercase_needle(&record.name, query_lower) {
+            if !contains_lowercase_needle(name, query_lower) {
                 continue;
             }
-            let name_lower = record.name.to_lowercase();
-            if let Some(score) =
-                crate::score::score_name_lower(&record.name, &name_lower, query_lower)
-            {
+            let name_lower = name.to_lowercase();
+            if let Some(score) = crate::score::score_name_lower(name, &name_lower, query_lower) {
                 candidates.push((score, slot));
             }
         }
@@ -96,7 +99,9 @@ impl MemoryIndex {
             };
             let (slot, _) = name_index::unpack(reference);
             let slot = slot as usize;
-            if self.slot_flags.get(slot).copied().unwrap_or(0) & pstart_core::walker::SLOT_PRESENT == 0 {
+            if self.slot_flags.get(slot).copied().unwrap_or(0) & pstart_core::walker::SLOT_PRESENT
+                == 0
+            {
                 return false;
             }
             if candidates.len() >= MAX_PREFIX_CANDIDATES {
@@ -148,7 +153,11 @@ impl MemoryIndex {
                            (right_score, right_slot): &(i32, usize)| {
             right_score
                 .cmp(left_score)
-                .then_with(|| self.slot_name(*left_slot).cmp(self.slot_name(*right_slot)))
+                .then_with(|| {
+                    self.slot_name(*left_slot)
+                        .unwrap_or("")
+                        .cmp(self.slot_name(*right_slot).unwrap_or(""))
+                })
                 .then_with(|| left_slot.cmp(right_slot))
         };
         let mut sorted_end = candidates.len();
@@ -175,9 +184,7 @@ impl MemoryIndex {
             let (score, slot) = candidates[position];
             position += 1;
             let record = self
-                .slots
-                .get(slot)
-                .and_then(Option::as_ref)
+                .record_from_slot(slot)
                 .expect("search candidate slot is live");
             let path = match self.resolve_record_path(Frn::new(record.frn)) {
                 Ok(path) => path,

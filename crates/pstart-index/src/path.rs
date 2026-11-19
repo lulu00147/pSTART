@@ -7,12 +7,13 @@ use pstart_core::limits::MAX_PATH_UTF16;
 use pstart_core::Frn;
 use thiserror::Error;
 
+#[cfg(test)]
 use crate::model::FileRecord;
 
 /// Lookup interface used by path reconstruction.
 pub trait RecordLookup {
-    /// Return a record by FRN, or `None` if it is not present.
-    fn record(&self, frn: Frn) -> Option<&FileRecord>;
+    /// Return a record name and parent FRN, or `None` if it is not present.
+    fn record(&self, frn: Frn) -> Option<(&str, u64)>;
 }
 
 /// Path reconstruction failure.
@@ -169,16 +170,16 @@ fn collect_components<L: RecordLookup + ?Sized>(
         }
         visited.push(current.get());
 
-        let record = lookup
+        let (name, parent_frn) = lookup
             .record(current)
             .ok_or_else(|| lookup_failure(current, frn, child))?;
 
-        if !valid_name(&record.name) {
+        if !valid_name(name) {
             return Err(PathError::InvalidName { frn: current });
         }
-        components.push(&record.name);
+        components.push(name);
         child = current;
-        current = Frn::new(record.parent_frn);
+        current = Frn::new(parent_frn);
     }
 
     Ok(components)
@@ -224,8 +225,10 @@ mod tests {
     struct MapLookup(HashMap<u64, FileRecord>);
 
     impl RecordLookup for MapLookup {
-        fn record(&self, frn: Frn) -> Option<&FileRecord> {
-            self.0.get(&frn.get())
+        fn record(&self, frn: Frn) -> Option<(&str, u64)> {
+            self.0
+                .get(&frn.get())
+                .map(|record| (record.name.as_ref(), record.parent_frn))
         }
     }
 

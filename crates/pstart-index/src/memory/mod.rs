@@ -91,6 +91,22 @@ impl MemoryReport {
     }
 }
 
+const SLOT_DIRECTORY: u8 = 4;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StoredRecord {
+    frn: u64,
+    last_usn: u64,
+    name_offset: u32,
+    attributes: u32,
+}
+
+impl StoredRecord {
+    fn attributes(self) -> u32 {
+        self.attributes
+    }
+}
+
 /// Mutable in-memory file index for one volume.
 #[derive(Debug)]
 pub struct MemoryIndex {
@@ -98,7 +114,9 @@ pub struct MemoryIndex {
     root: String,
     root_frn: Frn,
     max_depth: usize,
-    slots: Vec<Option<FileRecord>>,
+    slots: Vec<StoredRecord>,
+    name_lengths: Vec<u16>,
+    name_arena: Vec<u8>,
     free_slots: Vec<u32>,
     by_frn: FrnMap,
     names: NameIndex,
@@ -106,6 +124,7 @@ pub struct MemoryIndex {
     parent_slots: Vec<u32>,
     slot_flags: Vec<u8>,
     children: HashMap<u64, SmallVec<[u32; 2]>>,
+    missing_parents: HashMap<u32, u64>,
     trigram_bits: Vec<u64>,
     quadgram_bits: Vec<u64>,
     slot_signatures: Vec<u64>,
@@ -142,6 +161,8 @@ impl MemoryIndex {
             root_frn,
             max_depth,
             slots: Vec::new(),
+            name_lengths: Vec::new(),
+            name_arena: Vec::new(),
             free_slots: Vec::new(),
             by_frn: FrnMap::new(),
             names: NameIndex::default(),
@@ -149,6 +170,7 @@ impl MemoryIndex {
             parent_slots: Vec::new(),
             slot_flags: Vec::new(),
             children: HashMap::new(),
+            missing_parents: HashMap::new(),
             trigram_bits: vec![0; TRIGRAM_BITS / 64],
             quadgram_bits: vec![0; QUADGRAM_BITS / 64],
             slot_signatures: Vec::new(),
@@ -191,11 +213,13 @@ impl MemoryIndex {
     pub fn memory_report(&self) -> MemoryReport {
         let mut report = MemoryReport {
             records: self.by_frn.len(),
-            slots: self.slots.capacity() * std::mem::size_of::<Option<FileRecord>>(),
+            slots: self.slots.capacity() * std::mem::size_of::<StoredRecord>()
+                + self.name_arena.capacity(),
             by_frn: self.by_frn.capacity()
                 * (std::mem::size_of::<u64>() + std::mem::size_of::<u32>() + 1),
             metadata: self.parent_slots.capacity() * std::mem::size_of::<u32>()
-                + self.slot_flags.capacity(),
+                + self.slot_flags.capacity()
+                + self.name_lengths.capacity() * std::mem::size_of::<u16>(),
             bloom: (self.trigram_bits.capacity() + self.quadgram_bits.capacity())
                 * std::mem::size_of::<u64>(),
             signatures: (self.slot_signatures.capacity() + self.slot_quad_signatures.capacity())
@@ -203,8 +227,10 @@ impl MemoryIndex {
             free_slots: self.free_slots.capacity() * std::mem::size_of::<u32>(),
             ..MemoryReport::default()
         };
-        for record in self.slots.iter().flatten() {
-            report.slots += record.name.len();
+        for slot in 0..self.slots.len() {
+            if self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT != 0 {
+                let _ = slot;
+            }
         }
         report.by_name =
             self.names.bytes() + self.slot_generations.capacity() * std::mem::size_of::<u32>();
@@ -248,10 +274,7 @@ impl MemoryIndex {
         if self.slot_generations.get(slot).copied() != Some(generation) {
             return None;
         }
-        self.slots
-            .get(slot)
-            .and_then(Option::as_ref)
-            .map(|record| record.name.as_ref())
+        self.slot_name(slot)
     }
 
     fn compare_refs(&self, left: u64, right: u64) -> Ordering {
@@ -302,11 +325,11 @@ impl MemoryIndex {
         let mut references = Vec::with_capacity(self.names.live);
         for slot in 0..self.slots.len() {
             if self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT != 0 {
-                if self.slots[slot].is_some() {
-                    references.push(name_index::pack(slot as u32, self.slot_generations[slot]));
-                }
+                references.push(name_index::pack(slot as u32, self.slot_generations[slot]));
             } else {
-                self.slots[slot] = None;
+                self.slots[slot] = StoredRecord::default();
+                self.name_lengths[slot] = 0;
+                self.missing_parents.remove(&(slot as u32));
             }
         }
         references.sort_unstable_by(|left, right| self.compare_refs(*left, *right));
@@ -316,6 +339,25 @@ impl MemoryIndex {
         self.names.pending_dead = 0;
     }
 
+    fn compact_arena(&mut self) {
+        let mut compacted = Vec::with_capacity(self.name_arena.len());
+        let mut updated = Vec::with_capacity(self.slots.len());
+        for slot in 0..self.slots.len() {
+            if self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT != 0 {
+                if let Some(name) = self.slot_name(slot) {
+                    let offset = compacted.len() as u32;
+                    compacted.extend_from_slice(name.as_bytes());
+                    updated.push((slot, offset, name.len()));
+                }
+            }
+        }
+        for (slot, offset, len) in updated {
+            self.slots[slot].name_offset = offset;
+            self.name_lengths[slot] = len as u16;
+        }
+        self.name_arena = compacted;
+    }
+
     /// Merge pending name changes into the sorted index.
     pub fn compact_names(&mut self) {
         if self.names.needs_rebuild || self.names.pending_dead > 4096 {
@@ -323,9 +365,11 @@ impl MemoryIndex {
         } else if !self.names.dirty.is_empty() {
             self.merge_dirty_names();
         }
+        self.compact_arena();
         self.names.sorted.shrink_to_fit();
         self.names.dirty.shrink_to_fit();
         self.slots.shrink_to_fit();
+        self.name_lengths.shrink_to_fit();
         self.slot_generations.shrink_to_fit();
         self.parent_slots.shrink_to_fit();
         self.slot_flags.shrink_to_fit();
@@ -334,13 +378,70 @@ impl MemoryIndex {
         self.free_slots.shrink_to_fit();
     }
 
+    pub(super) fn slot_name(&self, slot: usize) -> Option<&str> {
+        let record = self.slots.get(slot)?;
+        let start = record.name_offset as usize;
+        let end = start.checked_add(*self.name_lengths.get(slot)? as usize)?;
+        let bytes = self.name_arena.get(start..end)?;
+        // SAFETY: arena bytes are only appended from valid UTF-8 `&str` slices,
+        // and offsets/lengths are stored together for that same slice.
+        Some(unsafe { std::str::from_utf8_unchecked(bytes) })
+    }
+
+    fn append_name(&mut self, name: &str) -> Result<(u32, usize), IndexError> {
+        let offset = u32::try_from(self.name_arena.len())
+            .map_err(|_| IndexError::InvalidData("name arena exceeds 4 GiB".to_owned()))?;
+        if name.len() > u16::MAX as usize {
+            return Err(IndexError::InvalidData("file name is too long".to_owned()));
+        }
+        self.name_arena.extend_from_slice(name.as_bytes());
+        Ok((offset, name.len()))
+    }
+
+    fn parent_frn_for_slot(&self, slot: usize) -> u64 {
+        let parent = self.parent_slots.get(slot).copied().unwrap_or(MISSING_SLOT);
+        if parent == ROOT_SLOT {
+            self.root_frn.get()
+        } else if parent == MISSING_SLOT {
+            self.missing_parents
+                .get(&(slot as u32))
+                .copied()
+                .unwrap_or(0)
+        } else {
+            self.slots
+                .get(parent as usize)
+                .map_or(0, |record| record.frn)
+        }
+    }
+
+    fn record_from_slot(&self, slot: usize) -> Option<FileRecord> {
+        if self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT == 0 {
+            return None;
+        }
+        let stored = *self.slots.get(slot)?;
+        let name = self.slot_name(slot)?;
+        Some(FileRecord {
+            frn: stored.frn,
+            parent_frn: self.parent_frn_for_slot(slot),
+            name: name.into(),
+            attributes: stored.attributes(),
+            is_dir: self.slot_flags[slot] & SLOT_DIRECTORY != 0,
+            last_usn: stored.last_usn,
+        })
+    }
+
+    #[cfg(test)]
+    fn force_slot_name(&mut self, slot: usize, name: &str) {
+        let (offset, len) = self.append_name(name).expect("test name fits arena");
+        self.slots[slot].name_offset = offset;
+        self.name_lengths[slot] = len as u16;
+    }
+
     /// Return a record by FRN.
     #[must_use]
-    pub fn record(&self, frn: Frn) -> Option<&FileRecord> {
-        self.by_frn
-            .get(frn.get())
-            .and_then(|slot| self.slots.get(slot as usize))
-            .and_then(Option::as_ref)
+    pub fn record(&self, frn: Frn) -> Option<FileRecord> {
+        let slot = self.by_frn.get(frn.get())? as usize;
+        self.record_from_slot(slot)
     }
 
     fn parent_slot(&self, parent_frn: u64) -> Option<u32> {
@@ -374,8 +475,9 @@ impl MemoryIndex {
         if let Some(children) = self.children.get(&parent_frn).cloned() {
             for child in children {
                 let child = child as usize;
-                if self.slots.get(child).and_then(Option::as_ref).is_some() {
+                if self.slot_flags.get(child).copied().unwrap_or(0) & SLOT_PRESENT != 0 {
                     self.parent_slots[child] = parent_slot;
+                    self.missing_parents.remove(&(child as u32));
                 }
             }
         }
@@ -403,21 +505,27 @@ impl MemoryIndex {
 
         if let Some(slot) = self.by_frn.get(record.frn) {
             let slot = slot as usize;
-            let Some(existing) = self.slots.get(slot).and_then(Option::as_ref) else {
-                return Err(IndexError::InvalidData(
-                    "index slot reference is dangling".to_owned(),
-                ));
-            };
-            if existing.last_usn > record.last_usn {
+            let stored = *self
+                .slots
+                .get(slot)
+                .filter(|_| self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT != 0)
+                .ok_or_else(|| {
+                    IndexError::InvalidData("index slot reference is dangling".to_owned())
+                })?;
+            if stored.last_usn > record.last_usn {
                 return Ok(false);
             }
-            if existing == &record {
+            let name_changed = self.slot_name(slot) != Some(record.name.as_ref());
+            let is_dir = self.slot_flags[slot] & SLOT_DIRECTORY != 0;
+            if !name_changed
+                && stored.last_usn == record.last_usn
+                && stored.attributes() == record.attributes
+                && is_dir == record.is_dir
+            {
                 return Ok(false);
             }
-            let old_parent = existing.parent_frn;
-            let old_name = existing.name.clone();
+            let old_parent = self.parent_frn_for_slot(slot);
             let key = record.name.to_lowercase();
-            let name_changed = old_name != record.name;
             if name_changed {
                 let generation = self.slot_generations[slot].wrapping_add(1);
                 self.slot_generations[slot] = generation;
@@ -427,12 +535,29 @@ impl MemoryIndex {
                 self.detach_child(old_parent, slot);
                 self.attach_child(record.parent_frn, slot);
             }
+            let (name_offset, name_len) = if name_changed {
+                self.append_name(&record.name)?
+            } else {
+                (stored.name_offset, self.name_lengths[slot] as usize)
+            };
             self.parent_slots[slot] = self.parent_slot(record.parent_frn).unwrap_or(MISSING_SLOT);
-            self.slot_flags[slot] = Self::slot_flags(crate::path::valid_name(&record.name));
+            if self.parent_slots[slot] == MISSING_SLOT {
+                self.missing_parents.insert(slot as u32, record.parent_frn);
+            } else {
+                self.missing_parents.remove(&(slot as u32));
+            }
+            self.slot_flags[slot] = Self::slot_flags(crate::path::valid_name(&record.name))
+                | if record.is_dir { SLOT_DIRECTORY } else { 0 };
             self.mark_ngrams(&key);
             self.slot_signatures[slot] = trigram_signature(&key);
             self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
-            self.slots[slot] = Some(record);
+            self.slots[slot] = StoredRecord {
+                frn: record.frn,
+                last_usn: record.last_usn,
+                name_offset,
+                attributes: record.attributes,
+            };
+            self.name_lengths[slot] = name_len as u16;
             if name_changed {
                 self.rebuild_names();
             }
@@ -443,22 +568,31 @@ impl MemoryIndex {
         let frn = record.frn;
         let key = record.name.to_lowercase();
         let name_valid = crate::path::valid_name(&record.name);
+        let (name_offset, name_len) = self.append_name(&record.name)?;
         let reused = self.free_slots.last().copied();
         let slot = if let Some(slot) = self.free_slots.pop() {
             let slot = slot as usize;
-            self.slots[slot] = Some(record);
             self.parent_slots[slot] = MISSING_SLOT;
-            self.slot_flags[slot] = Self::slot_flags(name_valid);
             slot
         } else {
             let slot = self.slots.len();
-            self.slots.push(Some(record));
+            self.slots.push(StoredRecord::default());
+            self.name_lengths.push(0);
             self.parent_slots.push(MISSING_SLOT);
-            self.slot_flags.push(Self::slot_flags(name_valid));
+            self.slot_flags.push(0);
             self.slot_signatures.push(0);
             self.slot_quad_signatures.push(0);
             slot
         };
+        self.slots[slot] = StoredRecord {
+            frn,
+            last_usn: record.last_usn,
+            name_offset,
+            attributes: record.attributes,
+        };
+        self.name_lengths[slot] = name_len as u16;
+        self.slot_flags[slot] =
+            Self::slot_flags(name_valid) | if record.is_dir { SLOT_DIRECTORY } else { 0 };
         if reused.is_some() {
             let generation = self.slot_generations[slot].wrapping_add(1);
             self.slot_generations[slot] = generation;
@@ -472,6 +606,11 @@ impl MemoryIndex {
         self.slot_signatures[slot] = trigram_signature(&key);
         self.slot_quad_signatures[slot] = quadgram_signature_bytes(key.as_bytes());
         self.parent_slots[slot] = self.parent_slot(parent_frn).unwrap_or(MISSING_SLOT);
+        if self.parent_slots[slot] == MISSING_SLOT {
+            self.missing_parents.insert(slot as u32, parent_frn);
+        } else {
+            self.missing_parents.remove(&(slot as u32));
+        }
         self.attach_child(parent_frn, slot);
         self.update_waiting_children(frn, slot as u32);
         if reused.is_some() {
@@ -493,23 +632,26 @@ impl MemoryIndex {
             return Ok(false);
         };
         let slot = slot as usize;
-        let Some(record) = self.slots.get(slot).and_then(Option::as_ref) else {
-            return Err(IndexError::InvalidData(
-                "index slot reference is dangling".to_owned(),
-            ));
-        };
-        if record.last_usn > usn {
+        let stored = *self
+            .slots
+            .get(slot)
+            .filter(|_| self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT != 0)
+            .ok_or_else(|| {
+                IndexError::InvalidData("index slot reference is dangling".to_owned())
+            })?;
+        if stored.last_usn > usn {
             return Ok(false);
         }
-        let parent_frn = record.parent_frn;
+        let parent_frn = self.parent_frn_for_slot(slot);
         self.names.remove(slot as u32);
         self.detach_child(parent_frn, slot);
         self.parent_slots[slot] = MISSING_SLOT;
+        self.missing_parents.remove(&(slot as u32));
         self.slot_flags[slot] = 0;
         if let Some(children) = self.children.get(&frn.get()).cloned() {
             for child in children {
                 let child = child as usize;
-                if self.slots.get(child).and_then(Option::as_ref).is_some() {
+                if self.slot_flags.get(child).copied().unwrap_or(0) & SLOT_PRESENT != 0 {
                     self.parent_slots[child] = MISSING_SLOT;
                 }
             }
@@ -585,13 +727,19 @@ impl MemoryIndex {
         }
         for (frn, slot) in self.by_frn.iter() {
             let slot = slot as usize;
-            let Some(record) = self.slots.get(slot).and_then(Option::as_ref) else {
+            if self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT == 0 {
+                return Some("frn points at a free slot");
+            }
+            let Some(record) = self.slots.get(slot) else {
                 return Some("frn points at a free slot");
             };
             if record.frn != frn {
                 return Some("slot frn mismatch");
             }
-            let key = record.name.to_lowercase();
+            let Some(name) = self.slot_name(slot) else {
+                return Some("slot name missing");
+            };
+            let key = name.to_lowercase();
             let reference = name_index::pack(slot as u32, self.slot_generations[slot]);
             if !self.names.contains(reference) {
                 return Some("slot missing from name bucket");
@@ -608,7 +756,7 @@ impl MemoryIndex {
             if flags & SLOT_PRESENT == 0 {
                 return Some("slot presence mismatch");
             }
-            let valid = crate::path::valid_name(&record.name);
+            let valid = crate::path::valid_name(name);
             if (flags & SLOT_NAME_VALID != 0) != valid {
                 return Some("slot name validity mismatch");
             }
@@ -632,7 +780,11 @@ impl MemoryIndex {
 }
 
 impl RecordLookup for MemoryIndex {
-    fn record(&self, frn: Frn) -> Option<&FileRecord> {
-        self.record(frn)
+    fn record(&self, frn: Frn) -> Option<(&str, u64)> {
+        let slot = self.by_frn.get(frn.get())? as usize;
+        if self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT == 0 {
+            return None;
+        }
+        Some((self.slot_name(slot)?, self.parent_frn_for_slot(slot)))
     }
 }

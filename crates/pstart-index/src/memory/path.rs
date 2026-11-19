@@ -54,24 +54,19 @@ impl MemoryIndex {
             },
         };
 
-        if let Some(position) = slots.iter().position(|slot| {
-            self.slots
-                .get(*slot as usize)
-                .and_then(Option::as_ref)
-                .is_none()
-        }) {
+        if let Some(position) = slots
+            .iter()
+            .position(|slot| !self.slot_live(*slot as usize))
+        {
             let missing = slots[position];
             let (child, parent) = if position == 0 {
                 (frn, self.slot_frn(missing).unwrap_or(frn))
             } else {
-                let child_record = self
-                    .slots
-                    .get(slots[position - 1] as usize)
-                    .and_then(Option::as_ref)
-                    .expect("path prefix is live");
+                let child_slot = slots[position - 1] as usize;
+                let child_record = self.slots[child_slot];
                 (
                     Frn::new(child_record.frn),
-                    Frn::new(child_record.parent_frn),
+                    Frn::new(self.parent_frn_for_slot(child_slot)),
                 )
             };
             return Err(PathError::MissingParent { child, parent });
@@ -85,23 +80,20 @@ impl MemoryIndex {
         };
         let mut path = String::from(normalized_root);
         for slot in slots.iter().rev() {
-            let record = self
-                .slots
-                .get(*slot as usize)
-                .and_then(Option::as_ref)
-                .ok_or(PathError::MissingParent {
-                    child: frn,
-                    parent: self.slot_frn(*slot).unwrap_or(frn),
-                })?;
-            if !crate::path::valid_name(&record.name) {
+            let slot = *slot as usize;
+            let name = self.slot_name(slot).ok_or(PathError::MissingParent {
+                child: frn,
+                parent: self.slot_frn(slot as u32).unwrap_or(frn),
+            })?;
+            if !crate::path::valid_name(name) {
                 return Err(PathError::InvalidName {
-                    frn: Frn::new(record.frn),
+                    frn: Frn::new(self.slots[slot].frn),
                 });
             }
             if !path.ends_with('\\') {
                 path.push('\\');
             }
-            path.push_str(&record.name);
+            path.push_str(name);
         }
         let length = path.encode_utf16().count();
         if length > MAX_PATH_UTF16 {
@@ -113,10 +105,16 @@ impl MemoryIndex {
         Ok(path)
     }
 
+    fn slot_live(&self, slot: usize) -> bool {
+        self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT != 0
+    }
+
     fn slot_frn(&self, slot: u32) -> Option<Frn> {
+        if !self.slot_live(slot as usize) {
+            return None;
+        }
         self.slots
             .get(slot as usize)
-            .and_then(Option::as_ref)
             .map(|record| Frn::new(record.frn))
     }
 
@@ -124,21 +122,12 @@ impl MemoryIndex {
         if let Some(frn) = self.slot_frn(slot) {
             return frn;
         }
-        self.slots
+        self.parent_slots
             .iter()
             .enumerate()
-            .find_map(|(index, record)| {
-                let record = record.as_ref()?;
-                (self.parent_slots.get(index).copied() == Some(slot))
-                    .then_some(Frn::new(record.parent_frn))
+            .find_map(|(index, parent)| {
+                (*parent == slot).then_some(Frn::new(self.parent_frn_for_slot(index)))
             })
             .unwrap_or(fallback)
-    }
-
-    pub(super) fn slot_name(&self, slot: usize) -> &str {
-        self.slots
-            .get(slot)
-            .and_then(Option::as_ref)
-            .map_or("", |record| record.name.as_ref())
     }
 }

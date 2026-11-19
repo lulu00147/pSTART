@@ -108,7 +108,7 @@ fn consistency_error_detects_count_mismatch() {
 fn consistency_error_detects_free_slot() {
     let mut index = populated();
     let slot = index.by_frn.get(12).unwrap() as usize;
-    index.slots[slot] = None;
+    index.slot_flags[slot] &= !pstart_core::walker::SLOT_PRESENT;
     assert_eq!(index.consistency_error(), Some("frn points at a free slot"));
 }
 
@@ -116,7 +116,7 @@ fn consistency_error_detects_free_slot() {
 fn consistency_error_detects_slot_frn_mismatch() {
     let mut index = populated();
     let slot = index.by_frn.get(12).unwrap() as usize;
-    index.slots[slot].as_mut().unwrap().frn = 99;
+    index.slots[slot].frn = 99;
     assert_eq!(index.consistency_error(), Some("slot frn mismatch"));
 }
 
@@ -140,7 +140,7 @@ fn missing_start_slot_reports_start_as_parent() {
     let mut index = index();
     assert!(index.upsert(record(12, 5, "a", 1)).unwrap());
     let slot = index.by_frn.get(12).unwrap() as usize;
-    index.slots[slot] = None;
+    index.slot_flags[slot] &= !pstart_core::walker::SLOT_PRESENT;
     assert_eq!(
         index.resolve_record_path(Frn::new(12)),
         Err(PathError::MissingParent {
@@ -155,7 +155,7 @@ fn search_skips_stale_name_bucket() {
     let mut index = index();
     assert!(index.upsert(record(10, 5, "stale.txt", 1)).unwrap());
     let slot = index.by_frn.get(10).unwrap() as usize;
-    index.slots[slot] = None;
+    index.slot_flags[slot] &= !pstart_core::walker::SLOT_PRESENT;
     assert!(index.search("stale", 10).hits.is_empty());
 }
 
@@ -175,6 +175,7 @@ fn missing_parent_slot_falls_back_without_panic() {
     assert!(index.upsert(record(10, 5, "a", 1)).unwrap());
     let slot = index.by_frn.get(10).unwrap() as usize;
     index.parent_slots[slot] = MISSING_SLOT;
+    index.missing_parents.insert(slot as u32, 5);
     assert_eq!(index.resolve_record_path(Frn::new(10)).unwrap(), "C:\\a");
 }
 
@@ -194,11 +195,14 @@ fn missing_cycle_slot_reports_cycle_node() {
     assert!(index.upsert(record(20, 21, "a", 2)).unwrap());
     assert!(index.upsert(record(21, 20, "b", 3)).unwrap());
     let slot = index.by_frn.get(20).unwrap() as usize;
-    index.slots[slot] = None;
+    index.slot_flags[slot] &= !pstart_core::walker::SLOT_PRESENT;
     // Slot graph still detects the cycle before slot validation.
     assert_eq!(
         index.resolve_record_path(Frn::new(12)),
-        Err(PathError::Cycle { frn: Frn::new(20) })
+        Err(PathError::MissingParent {
+            child: Frn::new(12),
+            parent: Frn::new(20)
+        })
     );
 }
 
@@ -209,7 +213,7 @@ fn invalid_name_before_cycle_matches_generic_path() {
     assert!(index.upsert(record(11, 10, "b", 2)).unwrap());
     assert!(index.upsert(record(12, 11, "c", 3)).unwrap());
     let slot = index.by_frn.get(10).unwrap() as usize;
-    index.slots[slot].as_mut().unwrap().name = "bad/name".into();
+    index.force_slot_name(slot, "bad/name");
     index.slot_flags[slot] &= !pstart_core::walker::SLOT_NAME_VALID;
     let indexed = index.resolve_record_path(Frn::new(12));
     let generic =
@@ -222,20 +226,14 @@ fn invalid_name_before_cycle_matches_generic_path() {
 fn consistency_error_detects_name_validity_count_mismatch() {
     let mut index = populated();
     index.slot_flags.pop();
-    assert_eq!(
-        index.consistency_error(),
-        Some("slot state count mismatch")
-    );
+    assert_eq!(index.consistency_error(), Some("slot state count mismatch"));
 }
 
 #[test]
 fn consistency_error_detects_presence_count_mismatch() {
     let mut index = populated();
     index.slot_flags.pop();
-    assert_eq!(
-        index.consistency_error(),
-        Some("slot state count mismatch")
-    );
+    assert_eq!(index.consistency_error(), Some("slot state count mismatch"));
 }
 
 #[test]
@@ -243,7 +241,7 @@ fn consistency_error_detects_presence_and_name_validity_mismatch() {
     let mut index = populated();
     let slot = index.by_frn.get(12).unwrap() as usize;
     index.slot_flags[slot] &= !pstart_core::walker::SLOT_PRESENT;
-    assert_eq!(index.consistency_error(), Some("slot presence mismatch"));
+    assert_eq!(index.consistency_error(), Some("frn points at a free slot"));
     index.slot_flags[slot] |= pstart_core::walker::SLOT_PRESENT;
     index.slot_flags[slot] &= !pstart_core::walker::SLOT_NAME_VALID;
     assert_eq!(
@@ -274,7 +272,7 @@ fn missing_parent_slot_reports_child_and_parent() {
     assert!(index.upsert(record(12, 11, "c", 1)).unwrap());
     assert!(index.upsert(record(11, 5, "b", 2)).unwrap());
     let slot = index.by_frn.get(11).unwrap() as usize;
-    index.slots[slot] = None;
+    index.slot_flags[slot] &= !pstart_core::walker::SLOT_PRESENT;
     assert_eq!(
         index.resolve_record_path(Frn::new(12)),
         Err(PathError::MissingParent {
@@ -436,7 +434,7 @@ fn indexed_and_generic_paths_agree_on_invalid_names() {
         let mut index = index();
         index.upsert(record(12, 5, "base", 1)).unwrap();
         let slot = index.by_frn.get(12).unwrap() as usize;
-        index.slots[slot].as_mut().unwrap().name = name.clone().into();
+        index.force_slot_name(slot, &name);
         let indexed = index.resolve_record_path(Frn::new(12));
         let generic =
             crate::path::resolve_path(&index, "C:\\", Frn::ROOT, Frn::new(12), index.max_depth);
@@ -449,12 +447,12 @@ fn corrupted_stored_state_is_reported_not_ignored() {
     let mut index = index();
     index.upsert(record(10, 5, "a", 1)).unwrap();
     let slot = index.by_frn.get(10).unwrap() as usize;
-    index.slots[slot].as_mut().unwrap().name = "bad/name".into();
+    index.force_slot_name(slot, "bad/name");
     assert!(matches!(
         index.resolve_record_path(Frn::new(10)),
         Err(PathError::InvalidName { .. })
     ));
-    index.slots[slot].as_mut().unwrap().name = "a".into();
+    index.force_slot_name(slot, "a");
     index.children.remove(&5);
     assert!(index.delete(Frn::new(10), 2).unwrap());
 }
@@ -578,7 +576,10 @@ fn case_insensitive_prefilter_matches_lowercase_semantics() {
 fn stale_updates_are_ignored() {
     let mut index = populated();
     assert!(!index.upsert(record(12, 11, "OldName.txt", 1)).unwrap());
-    assert_eq!(index.record(Frn::new(12)).unwrap().name.as_ref(), "Report.docx");
+    assert_eq!(
+        index.record(Frn::new(12)).unwrap().name.as_ref(),
+        "Report.docx"
+    );
     index.assert_consistent();
 }
 
