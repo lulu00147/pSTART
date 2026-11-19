@@ -98,8 +98,9 @@ mod host {
     const SMOKE_TIMER: usize = 1;
     const QUERY_TIMER: usize = 2;
     const QUERY_POLL_TIMER: usize = 3;
-    const QUERY_DEBOUNCE_MS: u32 = 80;
+    const QUERY_DEBOUNCE_MS: u32 = 60;
     const QUERY_POLL_MS: u32 = 16;
+    const QUERY_READY: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 11;
     const NAV_UP: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
     const NAV_DOWN: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 2;
     const NAV_ENTER: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 3;
@@ -627,6 +628,7 @@ mod host {
             let sender = self.query_tx.clone();
             let apps = Arc::clone(&self.apps);
             let app_plugin = self.app_plugin.clone();
+            let hwnd = self.hwnd as isize;
             thread::spawn(move || {
                 let result = Client::connect(&path).and_then(|mut client| {
                     let mut response = client.query(&text, limit)?;
@@ -661,6 +663,10 @@ mod host {
                     Ok((response, syncing))
                 });
                 let _ = sender.send(QueryOutcome { generation, result });
+                // SAFETY: hwnd is the host window; PostMessage is safe after destruction.
+                unsafe {
+                    PostMessageW(hwnd as HWND, QUERY_READY, 0, 0);
+                }
             });
             // SAFETY: hwnd is live; polling timer drives the UI thread.
             unsafe {
@@ -1664,6 +1670,25 @@ mod host {
                         unsafe {
                             (*pointer).query_from_edit();
                         }
+                        // SAFETY: invalidate the result area.
+                        unsafe {
+                            InvalidateRect(hwnd, null(), 0);
+                        }
+                    }
+                }
+                0
+            }
+            QUERY_READY => {
+                if !pointer.is_null() {
+                    // SAFETY: pointer is a live State.
+                    let (changed, pending) = unsafe { (*pointer).poll_query() };
+                    if !pending {
+                        // SAFETY: timer belongs to this window.
+                        unsafe {
+                            KillTimer(hwnd, QUERY_POLL_TIMER);
+                        }
+                    }
+                    if changed {
                         // SAFETY: invalidate the result area.
                         unsafe {
                             InvalidateRect(hwnd, null(), 0);
