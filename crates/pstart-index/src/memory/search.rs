@@ -64,10 +64,15 @@ impl MemoryIndex {
                     continue;
                 }
             }
+            let flags = self.slot_flags.get(slot).copied().unwrap_or(0);
             if !contains_lowercase_needle(name, query_lower) {
                 continue;
             }
-            let lowered = needs_lowercase(name).then(|| name.to_lowercase());
+            let lowered = if flags & crate::memory::SLOT_LOWER == 0 {
+                Some(name.to_lowercase())
+            } else {
+                None
+            };
             let name_lower = lowered.as_deref().unwrap_or(name);
             if let Some(score) = crate::score::score_name_lower(name, name_lower, query_lower) {
                 candidates.push((score, slot));
@@ -91,8 +96,7 @@ impl MemoryIndex {
         let mut truncated = false;
 
         let start = self.names.sorted.partition_point(|reference| {
-            self.ref_name(*reference)
-                .is_some_and(|name| Self::lower_cmp(name, &query_lower) == std::cmp::Ordering::Less)
+            self.compare_ref_query(*reference, &query_lower) == std::cmp::Ordering::Less
         });
         let mut push = |reference: u64| -> bool {
             let Some(name) = self.ref_name(reference) else {
@@ -100,28 +104,25 @@ impl MemoryIndex {
             };
             let (slot, _) = name_index::unpack(reference);
             let slot = slot as usize;
-            if self.slot_flags.get(slot).copied().unwrap_or(0) & pstart_core::walker::SLOT_PRESENT
-                == 0
-            {
+            let flags = self.slot_flags.get(slot).copied().unwrap_or(0);
+            if flags & pstart_core::walker::SLOT_PRESENT == 0 {
                 return false;
             }
             if candidates.len() >= MAX_PREFIX_CANDIDATES {
                 return true;
             }
-            let base = if Self::lower_cmp(name, &query_lower) == std::cmp::Ordering::Equal {
-                SCORE_EXACT
+            let exact = if flags & SLOT_LOWER != 0 {
+                name == query_lower
             } else {
-                SCORE_PREFIX
+                Self::lower_cmp(name, &query_lower) == std::cmp::Ordering::Equal
             };
+            let base = if exact { SCORE_EXACT } else { SCORE_PREFIX };
             let chars = crate::score::char_count(name);
             candidates.push((apply_penalty(base, chars), slot));
             false
         };
         for reference in &self.names.sorted[start..] {
-            let Some(name) = self.ref_name(*reference) else {
-                continue;
-            };
-            if !Self::lower_starts_with(name, &query_lower) {
+            if !self.ref_starts_with_query(*reference, &query_lower) {
                 break;
             }
             if push(*reference) {
@@ -131,10 +132,7 @@ impl MemoryIndex {
         }
         if !truncated {
             for reference in &self.names.dirty {
-                let Some(name) = self.ref_name(*reference) else {
-                    continue;
-                };
-                if !Self::lower_starts_with(name, &query_lower) {
+                if !self.ref_starts_with_query(*reference, &query_lower) {
                     continue;
                 }
                 if push(*reference) {

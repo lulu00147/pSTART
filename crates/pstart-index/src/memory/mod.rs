@@ -92,6 +92,7 @@ impl MemoryReport {
 }
 
 const SLOT_DIRECTORY: u8 = 4;
+const SLOT_LOWER: u8 = 8;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct StoredRecord {
@@ -239,8 +240,11 @@ impl MemoryIndex {
         report
     }
 
-    fn slot_flags(name_valid: bool) -> u8 {
-        SLOT_PRESENT | if name_valid { SLOT_NAME_VALID } else { 0 }
+    fn slot_flags(name_valid: bool, name: &str, is_dir: bool) -> u8 {
+        SLOT_PRESENT
+            | if name_valid { SLOT_NAME_VALID } else { 0 }
+            | if is_dir { SLOT_DIRECTORY } else { 0 }
+            | if needs_lowercase(name) { 0 } else { SLOT_LOWER }
     }
 
     fn lower_cmp(left: &str, right: &str) -> Ordering {
@@ -280,8 +284,40 @@ impl MemoryIndex {
 
     fn compare_refs(&self, left: u64, right: u64) -> Ordering {
         match (self.ref_name(left), self.ref_name(right)) {
-            (Some(left), Some(right)) => Self::lower_cmp(left, right),
+            (Some(left_name), Some(right_name)) => {
+                let left_flags = self.slot_flags[name_index::unpack(left).0 as usize];
+                let right_flags = self.slot_flags[name_index::unpack(right).0 as usize];
+                if left_flags & SLOT_LOWER != 0 && right_flags & SLOT_LOWER != 0 {
+                    left_name.cmp(right_name)
+                } else {
+                    Self::lower_cmp(left_name, right_name)
+                }
+            }
             _ => Ordering::Equal,
+        }
+    }
+
+    fn compare_ref_query(&self, reference: u64, query_lower: &str) -> Ordering {
+        let Some(name) = self.ref_name(reference) else {
+            return Ordering::Equal;
+        };
+        let flags = self.slot_flags[name_index::unpack(reference).0 as usize];
+        if flags & SLOT_LOWER != 0 {
+            name.cmp(query_lower)
+        } else {
+            Self::lower_cmp(name, query_lower)
+        }
+    }
+
+    fn ref_starts_with_query(&self, reference: u64, query_lower: &str) -> bool {
+        let Some(name) = self.ref_name(reference) else {
+            return false;
+        };
+        let flags = self.slot_flags[name_index::unpack(reference).0 as usize];
+        if flags & SLOT_LOWER != 0 {
+            name.starts_with(query_lower)
+        } else {
+            Self::lower_starts_with(name, query_lower)
         }
     }
 
@@ -440,6 +476,10 @@ impl MemoryIndex {
         let (offset, len) = self.append_name(name).expect("test name fits arena");
         self.slots[slot].name_offset = offset;
         self.name_lengths[slot] = len as u16;
+        self.slot_flags[slot] &= !SLOT_LOWER;
+        if !needs_lowercase(name) {
+            self.slot_flags[slot] |= SLOT_LOWER;
+        }
     }
 
     /// Return a record by FRN.
@@ -548,8 +588,11 @@ impl MemoryIndex {
             } else {
                 self.missing_parents.remove(&(slot as u32));
             }
-            self.slot_flags[slot] = Self::slot_flags(crate::path::valid_name(&record.name))
-                | if record.is_dir { SLOT_DIRECTORY } else { 0 };
+            self.slot_flags[slot] = Self::slot_flags(
+                crate::path::valid_name(&record.name),
+                &record.name,
+                record.is_dir,
+            );
             let (trigram, quadgram) = self.index_name_ngrams(&record.name);
             self.slot_signatures[slot] = trigram;
             self.slot_quad_signatures[slot] = quadgram;
@@ -592,8 +635,7 @@ impl MemoryIndex {
             attributes: record.attributes,
         };
         self.name_lengths[slot] = name_len as u16;
-        self.slot_flags[slot] =
-            Self::slot_flags(name_valid) | if record.is_dir { SLOT_DIRECTORY } else { 0 };
+        self.slot_flags[slot] = Self::slot_flags(name_valid, &record.name, record.is_dir);
         if reused.is_some() {
             self.names.reuse(slot as u32, name_offset);
         } else {
