@@ -4,6 +4,8 @@
 //! while state transitions, path reconstruction, search and SQLite persistence
 //! are testable on any platform.
 
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod memory;
 pub mod model;

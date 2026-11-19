@@ -1,5 +1,7 @@
 //! External UI smoke harness: launches pstart-host and drives Win32 messages.
 
+#![allow(unsafe_code)] // Win32 UI smoke-test FFI boundary
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("host-ui-smoke is only supported on Windows");

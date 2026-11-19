@@ -3,6 +3,8 @@
 //! GDI overlay, native EDIT, hotkey and single-instance lifecycle are
 //! implemented in M6. No UI capability is claimed until it is tested.
 
+#![forbid(unsafe_code)]
+
 pub mod action;
 pub mod apps;
 pub mod calculator;

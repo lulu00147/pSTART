@@ -10,7 +10,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use memmap2::Mmap;
 use rusqlite::Connection;
 
 const LIMIT: usize = 10;
@@ -45,27 +44,26 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 }
 
 struct DiskIndex {
-    mmap: Mmap,
+    bytes: Vec<u8>,
     keys: usize,
 }
 
 impl DiskIndex {
     fn open(path: &PathBuf) -> std::io::Result<Self> {
-        let file = File::open(path)?;
-        let mmap = unsafe { Mmap::map(&file)? };
-        let keys = u32_at(&mmap, 0) as usize;
-        Ok(Self { mmap, keys })
+        let bytes = std::fs::read(path)?;
+        let keys = u32_at(&bytes, 0) as usize;
+        Ok(Self { bytes, keys })
     }
 
     fn entry(&self, position: usize) -> (u32, usize, usize) {
         let offset = HEADER_SIZE + position * ENTRY_SIZE;
-        let key = u32_at(&self.mmap, offset);
-        let start = u32_at(&self.mmap, offset + 4) as usize;
-        let length = u32_at(&self.mmap, offset + 12) as usize;
+        let key = u32_at(&self.bytes, offset);
+        let start = u32_at(&self.bytes, offset + 4) as usize;
+        let length = u32_at(&self.bytes, offset + 12) as usize;
         (key, start, length)
     }
 
-    fn posting(&self, term: u32) -> Option<&[u32]> {
+    fn posting(&self, term: u32) -> Option<Vec<u32>> {
         let mut low = 0usize;
         let mut high = self.keys;
         while low < high {
@@ -76,11 +74,13 @@ impl DiskIndex {
             } else if key > term {
                 high = middle;
             } else {
-                let bytes = &self.mmap[start..start + length * 4];
-                // SAFETY: entries are 4-byte aligned and little-endian on the
-                // supported Windows target; the slice is bounds checked above.
-                let pointer = bytes.as_ptr().cast::<u32>();
-                return Some(unsafe { std::slice::from_raw_parts(pointer, length) });
+                let bytes = &self.bytes[start..start + length * 4];
+                return Some(
+                    bytes
+                        .chunks_exact(4)
+                        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("u32")))
+                        .collect(),
+                );
             }
         }
         None
@@ -136,7 +136,7 @@ fn search(names: &Names, index: &DiskIndex, needle: &[u8]) -> usize {
     }
     lists.sort_unstable_by_key(|list| list.len());
     let mut found = 0;
-    'candidates: for doc in lists[0] {
+    'candidates: for doc in &lists[0] {
         for list in &lists[1..] {
             if list.binary_search(doc).is_err() {
                 continue 'candidates;

@@ -21,7 +21,6 @@ serde.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 rusqlite.workspace = true
-memmap2 = "0.9.5"
 
 [dev-dependencies]
 tempfile.workspace = true

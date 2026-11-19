@@ -1,5 +1,7 @@
 //! Minimal GDI Host: single instance, double-Ctrl overlay, native EDIT, query list.
 
+#![allow(unsafe_code)] // Win32 UI / hotkey FFI boundary
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("pstart-host is only supported on Windows");

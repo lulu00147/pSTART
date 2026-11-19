@@ -40,7 +40,9 @@ impl MemoryIndex {
             {
                 continue;
             }
-            let name = self.slot_name_unchecked(slot);
+            let Some(name) = self.slot_name(slot) else {
+                continue;
+            };
             if seen.binary_search(&slot).is_ok() {
                 continue;
             }

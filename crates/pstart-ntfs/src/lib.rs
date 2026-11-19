@@ -3,10 +3,13 @@
 //! Record parsing is platform-independent and unit-tested on every platform.
 //! Volume handles and IOCTLs are compiled only on Windows.
 
+#![deny(unsafe_code)]
+
 pub mod error;
 pub mod usn;
 
 #[cfg(windows)]
+#[allow(unsafe_code)] // Win32 volume/IOCTL FFI boundary
 mod volume;
 
 pub use error::NtfsError;

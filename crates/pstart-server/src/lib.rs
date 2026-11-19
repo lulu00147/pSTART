@@ -4,6 +4,8 @@
 //! volume index pipeline is available here because it coordinates both the NTFS
 //! source and SQLite persistence.
 
+#![forbid(unsafe_code)]
+
 pub mod admission;
 pub mod command;
 pub mod config;

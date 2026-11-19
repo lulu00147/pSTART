@@ -3,6 +3,8 @@
 //! The transport moves opaque frames. Framing, decoding, validation and session
 //! authentication are implemented here and are independent of Windows APIs.
 
+#![deny(unsafe_code)]
+
 pub mod error;
 pub mod frame;
 pub mod message;
@@ -10,6 +12,7 @@ pub mod session;
 pub mod transport;
 
 #[cfg(windows)]
+#[allow(unsafe_code)] // Windows AF_UNIX FFI boundary
 pub mod af_unix;
 
 pub use error::IpcError;

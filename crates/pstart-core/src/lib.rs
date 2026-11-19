@@ -4,6 +4,8 @@
 //! identifiers and the externally observable error taxonomy. It must not
 //! depend on Windows APIs or on any transport implementation.
 
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod ids;
 pub mod limits;

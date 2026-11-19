@@ -1,4 +1,4 @@
-//! Immutable mmap trigram index for substring candidate filtering.
+//! Immutable file-backed trigram index for substring candidate filtering.
 //!
 //! The file stores a sorted trigram table and little-endian `u32` document
 //! posting lists. Document ids are assigned by the caller; the search layer is
@@ -9,7 +9,6 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-use memmap2::Mmap;
 
 use crate::error::IndexError;
 
@@ -145,16 +144,16 @@ pub fn delta_directory(primary: &Path) -> std::path::PathBuf {
     primary.with_extension("d")
 }
 
-/// Read-only trigram index backed by an mmap file.
+/// Read-only trigram index backed by an in-memory file snapshot.
 pub struct TrigramIndex {
-    mmap: Mmap,
+    bytes: Vec<u8>,
     keys: usize,
 }
 impl std::fmt::Debug for TrigramIndex {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("TrigramIndex")
-            .field("bytes", &self.mmap.len())
+            .field("bytes", &self.bytes.len())
             .field("keys", &self.keys)
             .finish()
     }
@@ -163,12 +162,8 @@ impl std::fmt::Debug for TrigramIndex {
 impl TrigramIndex {
     /// Open and validate an index file.
     pub fn open(path: &Path) -> Result<Self, IndexError> {
-        let file = File::open(path)
-            .map_err(|error| IndexError::InvalidData(format!("open trigram index: {error}")))?;
-        // SAFETY: the file is opened read-only and kept alive only through the
-        // mapping. Callers must not mutate the file while this index is open.
-        let mmap = unsafe { Mmap::map(&file) }
-            .map_err(|error| IndexError::InvalidData(format!("mmap trigram index: {error}")))?;
+        let mmap = std::fs::read(path)
+            .map_err(|error| IndexError::InvalidData(format!("read trigram index: {error}")))?;
         if mmap.len() < HEADER_LEN {
             return Err(IndexError::InvalidData(
                 "trigram index magic mismatch".to_owned(),
@@ -193,18 +188,18 @@ impl TrigramIndex {
                 "trigram table exceeds file".to_owned(),
             ));
         }
-        let index = Self { mmap, keys };
+        let index = Self { bytes: mmap, keys };
         index.validate_postings()?;
         Ok(index)
     }
 
     fn entry(&self, position: usize) -> Option<(u32, usize, usize)> {
         let offset = HEADER_LEN.checked_add(position.checked_mul(ENTRY_LEN)?)?;
-        let key = u32_at(&self.mmap, offset)?;
-        let start = u32_at(&self.mmap, offset + 4)? as usize;
-        let length = u32_at(&self.mmap, offset + 8)? as usize;
+        let key = u32_at(&self.bytes, offset)?;
+        let start = u32_at(&self.bytes, offset + 4)? as usize;
+        let length = u32_at(&self.bytes, offset + 8)? as usize;
         let end = start.checked_add(length.checked_mul(4)?)?;
-        if end > self.mmap.len() {
+        if end > self.bytes.len() {
             return None;
         }
         Some((key, start, length))
@@ -233,7 +228,7 @@ impl TrigramIndex {
                 std::cmp::Ordering::Equal => {
                     let end = start.checked_add(length.checked_mul(4)?)?;
                     return Some(Posting {
-                        bytes: self.mmap.get(start..end)?,
+                        bytes: self.bytes.get(start..end)?,
                     });
                 }
             }

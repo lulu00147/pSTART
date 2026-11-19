@@ -116,7 +116,7 @@ pub struct MemoryIndex {
     max_depth: usize,
     slots: Vec<StoredRecord>,
     name_lengths: Vec<u16>,
-    name_arena: Vec<u8>,
+    name_arena: String,
     free_slots: Vec<u32>,
     by_frn: FrnMap,
     names: NameIndex,
@@ -162,7 +162,7 @@ impl MemoryIndex {
             max_depth,
             slots: Vec::new(),
             name_lengths: Vec::new(),
-            name_arena: Vec::new(),
+            name_arena: String::new(),
             free_slots: Vec::new(),
             by_frn: FrnMap::new(),
             names: NameIndex::default(),
@@ -272,27 +272,13 @@ impl MemoryIndex {
         }
     }
 
-    #[inline]
-    fn slot_name_unchecked(&self, slot: usize) -> &str {
-        // SAFETY: callers only pass slots whose name was appended to the arena
-        // and whose offset/length pair was written together.
-        unsafe {
-            let record = self.slots.get_unchecked(slot);
-            let start = record.name_offset as usize;
-            let length = *self.name_lengths.get_unchecked(slot) as usize;
-            let bytes = self.name_arena.get_unchecked(start..start + length);
-            std::str::from_utf8_unchecked(bytes)
-        }
-    }
-
     fn ref_name(&self, reference: u64) -> Option<&str> {
         let (slot, generation) = name_index::unpack(reference);
         let slot = slot as usize;
         if self.slot_generations.get(slot).copied() != Some(generation) {
             return None;
         }
-        self.slots.get(slot)?;
-        Some(self.slot_name_unchecked(slot))
+        self.slot_name(slot)
     }
 
     fn compare_refs(&self, left: u64, right: u64) -> Ordering {
@@ -358,13 +344,13 @@ impl MemoryIndex {
     }
 
     fn compact_arena(&mut self) {
-        let mut compacted = Vec::with_capacity(self.name_arena.len());
+        let mut compacted = String::with_capacity(self.name_arena.len());
         let mut updated = Vec::with_capacity(self.slots.len());
         for slot in 0..self.slots.len() {
             if self.slot_flags.get(slot).copied().unwrap_or(0) & SLOT_PRESENT != 0 {
                 if let Some(name) = self.slot_name(slot) {
                     let offset = compacted.len() as u32;
-                    compacted.extend_from_slice(name.as_bytes());
+                    compacted.push_str(name);
                     updated.push((slot, offset, name.len()));
                 }
             }
@@ -400,10 +386,7 @@ impl MemoryIndex {
         let record = self.slots.get(slot)?;
         let start = record.name_offset as usize;
         let end = start.checked_add(*self.name_lengths.get(slot)? as usize)?;
-        let bytes = self.name_arena.get(start..end)?;
-        // SAFETY: arena bytes are only appended from valid UTF-8 `&str` slices,
-        // and offsets/lengths are stored together for that same slice.
-        Some(unsafe { std::str::from_utf8_unchecked(bytes) })
+        self.name_arena.get(start..end)
     }
 
     fn append_name(&mut self, name: &str) -> Result<(u32, usize), IndexError> {
@@ -412,7 +395,7 @@ impl MemoryIndex {
         if name.len() > u16::MAX as usize {
             return Err(IndexError::InvalidData("file name is too long".to_owned()));
         }
-        self.name_arena.extend_from_slice(name.as_bytes());
+        self.name_arena.push_str(name);
         Ok((offset, name.len()))
     }
 
