@@ -656,6 +656,11 @@ mod host {
                             response.truncated = true;
                         }
                     }
+                    if env::var("PSTART_VALIDATE_PATHS").map_or(true, |value| value != "0")
+                        && retain_existing_paths(&mut response.items)
+                    {
+                        response.truncated = true;
+                    }
                     Ok((response, syncing))
                 });
                 let _ = sender.send(QueryOutcome { generation, result });
@@ -666,20 +671,16 @@ mod host {
             }
         }
 
-        fn poll_query(&mut self) -> bool {
+        fn poll_query(&mut self) -> (bool, bool) {
+            let mut changed = false;
             while let Ok(outcome) = self.query_rx.try_recv() {
                 if !self.scheduler.accept(outcome.generation) {
                     continue;
                 }
                 match outcome.result {
-                    Ok((mut response, syncing)) => {
+                    Ok((response, syncing)) => {
                         self.pending_history_query = None;
                         let truncated = response.truncated;
-                        if env::var("PSTART_VALIDATE_PATHS").map_or(true, |value| value != "0")
-                            && retain_existing_paths(&mut response.items)
-                        {
-                            response.truncated = true;
-                        }
                         self.items = response.items;
                         if self.history_enabled {
                             if let Some(history) = &self.history {
@@ -699,8 +700,9 @@ mod host {
                     }
                 }
                 self.publish_result_count();
+                changed = true;
             }
-            self.scheduler.is_pending()
+            (changed, self.scheduler.is_pending())
         }
 
         fn record_history(&mut self, query: &str) {
@@ -1676,16 +1678,18 @@ mod host {
             WM_TIMER if wparam == QUERY_POLL_TIMER => {
                 if !pointer.is_null() {
                     // SAFETY: pointer is a live State.
-                    let pending = unsafe { (*pointer).poll_query() };
+                    let (changed, pending) = unsafe { (*pointer).poll_query() };
                     if !pending {
                         // SAFETY: timer belongs to this window.
                         unsafe {
                             KillTimer(hwnd, QUERY_POLL_TIMER);
                         }
                     }
-                    // SAFETY: invalidate the result area.
-                    unsafe {
-                        InvalidateRect(hwnd, null(), 0);
+                    if changed {
+                        // SAFETY: invalidate the result area.
+                        unsafe {
+                            InvalidateRect(hwnd, null(), 0);
+                        }
                     }
                 }
                 0
