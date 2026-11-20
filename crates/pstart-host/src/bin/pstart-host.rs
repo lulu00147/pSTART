@@ -2382,7 +2382,7 @@ mod host {
 
     fn golden_window_size_for(screen_width: i32, screen_height: i32) -> (i32, i32) {
         let width = (f64::from(screen_width) * (3.0 - 5.0_f64.sqrt()) / 2.0).round() as i32;
-        let height = (f64::from(screen_height) * (5.0_f64.sqrt() - 1.0) / 2.0).round() as i32;
+        let height = (f64::from(screen_height) * (3.0 - 5.0_f64.sqrt()) / 2.0).round() as i32;
         (width.max(320), height.max(240))
     }
 
@@ -2624,8 +2624,8 @@ mod host {
 
         #[test]
         fn golden_size_matches_screen_ratios() {
-            assert_eq!(golden_window_size_for(1920, 1080), (733, 667));
-            assert_eq!(golden_window_size_for(1280, 720), (489, 445));
+            assert_eq!(golden_window_size_for(1920, 1080), (733, 413));
+            assert_eq!(golden_window_size_for(1280, 720), (489, 275));
         }
 
         #[test]
