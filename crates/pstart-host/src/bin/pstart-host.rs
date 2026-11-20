@@ -218,58 +218,64 @@ mod host {
                 request = next;
             }
             let worker_started = Instant::now();
-            if client.is_none() {
-                match Client::connect(&socket) {
-                    Ok(connection) => client = Some(connection),
-                    Err(error) => {
-                        let _ = outcomes.send(QueryOutcome {
-                            generation: request.generation,
-                            worker_us: worker_started.elapsed().as_micros(),
-                            result: Err(error),
-                        });
-                        // SAFETY: hwnd is the host window; PostMessage is safe after destruction.
-                        unsafe {
-                            PostMessageW(hwnd as HWND, QUERY_READY, 0, 0);
-                        }
-                        continue;
+            let mut retried = false;
+            let query_result = loop {
+                if client.is_none() {
+                    match Client::connect(&socket) {
+                        Ok(connection) => client = Some(connection),
+                        Err(error) => break Err(error),
                     }
                 }
-            }
-            let result = (|| -> Result<(ClientResponse, bool), ClientError> {
                 let connection = client.as_mut().expect("worker connection is live");
-                let mut response = connection.query(&request.text, request.limit)?;
-                if app_search {
-                    let app_items = if let Some(plugin) = &app_plugin {
-                        match plugin.runtime.run_text_host_timeout(
-                            plugin.component.as_slice(),
-                            &request.text,
-                            Duration::from_millis(500),
-                        ) {
-                            Ok(output) => parse_plugin_apps(&output.text, request.limit as usize),
-                            Err(_) => apps
-                                .lock()
+                match connection.query(&request.text, request.limit) {
+                    Ok(response) => break Ok(response),
+                    Err(error) if error.is_offline() && !retried => {
+                        retried = true;
+                        client = None;
+                    }
+                    Err(error) => {
+                        client = None;
+                        break Err(error);
+                    }
+                }
+            };
+            let result = match query_result {
+                Err(error) => Err(error),
+                Ok(mut response) => {
+                    if app_search {
+                        let app_items = if let Some(plugin) = &app_plugin {
+                            match plugin.runtime.run_text_host_timeout(
+                                plugin.component.as_slice(),
+                                &request.text,
+                                Duration::from_millis(500),
+                            ) {
+                                Ok(output) => {
+                                    parse_plugin_apps(&output.text, request.limit as usize)
+                                }
+                                Err(_) => apps
+                                    .lock()
+                                    .map(|catalog| {
+                                        catalog.search(&request.text, request.limit as usize)
+                                    })
+                                    .unwrap_or_default(),
+                            }
+                        } else {
+                            apps.lock()
                                 .map(|catalog| {
                                     catalog.search(&request.text, request.limit as usize)
                                 })
-                                .unwrap_or_default(),
+                                .unwrap_or_default()
+                        };
+                        if merge_results(&mut response.items, app_items, request.limit as usize) {
+                            response.truncated = true;
                         }
-                    } else {
-                        apps.lock()
-                            .map(|catalog| catalog.search(&request.text, request.limit as usize))
-                            .unwrap_or_default()
-                    };
-                    if merge_results(&mut response.items, app_items, request.limit as usize) {
+                    }
+                    if validate_paths && retain_existing_paths(&mut response.items) {
                         response.truncated = true;
                     }
+                    Ok((response, false))
                 }
-                if validate_paths && retain_existing_paths(&mut response.items) {
-                    response.truncated = true;
-                }
-                Ok((response, false))
-            })();
-            if result.is_err() {
-                client = None;
-            }
+            };
             let _ = outcomes.send(QueryOutcome {
                 generation: request.generation,
                 worker_us: worker_started.elapsed().as_micros(),
@@ -350,6 +356,7 @@ mod host {
         pending_action: Option<ActionRequest>,
         action_roots: Vec<PathBuf>,
         history: Option<HistoryStore>,
+        aliases: std::collections::HashMap<String, String>,
         history_tx: Option<Sender<String>>,
         query_started: Option<Instant>,
         history_cache: Option<Vec<String>>,
@@ -377,6 +384,12 @@ mod host {
             );
             let (query_tx, query_rx) = mpsc::channel();
             let history = history_path().and_then(|path| HistoryStore::open(&path).ok());
+            let aliases = history
+                .as_ref()
+                .and_then(|store| store.aliases(100).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
             let history_tx = history
                 .as_ref()
                 .and_then(|store| store.path().map(std::path::Path::to_path_buf))
@@ -475,6 +488,7 @@ mod host {
                 pending_action: None,
                 action_roots,
                 history,
+                aliases,
                 history_tx,
                 query_started: None,
                 history_cache: None,
@@ -807,9 +821,9 @@ mod host {
         }
 
         fn resolve_alias(&self, text: &str) -> String {
-            self.history
-                .as_ref()
-                .and_then(|history| history.resolve_alias(text).ok().flatten())
+            self.aliases
+                .get(text)
+                .cloned()
                 .unwrap_or_else(|| text.to_owned())
         }
 
@@ -1096,6 +1110,7 @@ mod host {
                 self.status = "Alias rejected".to_owned();
                 return;
             }
+            self.aliases.insert(name.to_owned(), target.to_owned());
             self.show_settings();
         }
 
@@ -1403,6 +1418,7 @@ mod host {
                     if let Some(store) = &mut self.history {
                         let _ = store.remove_alias(name);
                     }
+                    self.aliases.remove(name);
                 }
                 _ => {}
             }
