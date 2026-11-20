@@ -87,9 +87,10 @@ mod host {
         SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, WA_INACTIVE, WH_KEYBOARD_LL,
         WM_ACTIVATE, WM_ACTIVATEAPP, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
         WM_ERASEBKGND, WM_HOTKEY, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
-        WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT,
-        WM_SETFOCUS, WM_SETFONT, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WNDPROC,
-        WS_BORDER, WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+        WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+        WM_PAINT, WM_SETFOCUS, WM_SETFONT, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
+        WNDCLASSW, WNDPROC, WS_BORDER, WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        WS_VISIBLE,
     };
 
     const INPUT_HEIGHT: i32 = 32;
@@ -99,6 +100,7 @@ mod host {
     const EDIT_ID: usize = 1001;
     const HOTKEY_ID: i32 = 1;
     const SMOKE_TIMER: usize = 1;
+    const IDLE_TIMER: usize = 2;
     const QUERY_READY: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 11;
     const NAV_UP: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
     const NAV_DOWN: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 2;
@@ -383,6 +385,9 @@ mod host {
         paint_height: i32,
         status: String,
         ime_composing: bool,
+        previous_foreground: isize,
+        idle_timeout_ms: u64,
+        last_activity: Instant,
     }
 
     impl State {
@@ -443,6 +448,17 @@ mod host {
                 .and_then(|store| store.get_setting("plugin.action_timeout_ms").ok().flatten())
                 .and_then(|value| value.parse::<u64>().ok())
                 .map_or(500, |value| value.clamp(50, 5000));
+            let idle_timeout_ms = history
+                .as_ref()
+                .and_then(|store| store.get_setting("ui.idle_timeout_ms").ok().flatten())
+                .and_then(|value| value.parse::<u64>().ok())
+                .map_or(3000, |value| {
+                    if value == 0 {
+                        0
+                    } else {
+                        value.clamp(1000, 60_000)
+                    }
+                });
             let action_roots = history
                 .as_ref()
                 .and_then(|store| store.get_setting("plugin.action_roots").ok().flatten())
@@ -521,11 +537,26 @@ mod host {
                 paint_height: 0,
                 status: "Type to search".to_owned(),
                 ime_composing: false,
+                previous_foreground: 0,
+                idle_timeout_ms,
+                last_activity: Instant::now(),
             }
         }
 
         fn scale(&self, value: i32) -> i32 {
             scale_at(value, self.dpi)
+        }
+
+        fn note_activity(&mut self) {
+            self.last_activity = Instant::now();
+        }
+
+        fn idle_timeout_label(&self) -> String {
+            if self.idle_timeout_ms == 0 {
+                "Off".to_owned()
+            } else {
+                format!("{}s", self.idle_timeout_ms.div_ceil(1000))
+            }
         }
 
         fn row_height(&self, client_height: i32) -> i32 {
@@ -1339,6 +1370,16 @@ mod host {
                         VolumeId::new("settings").expect("fixed volume"),
                         Frn::new(5),
                     ),
+                    name: format!("Idle timeout: {}", self.idle_timeout_label()),
+                    path: "settings://idle-timeout".to_owned(),
+                    attributes: 0,
+                    is_dir: false,
+                },
+                FileItem {
+                    id: FileId::new(
+                        VolumeId::new("settings").expect("fixed volume"),
+                        Frn::new(6),
+                    ),
                     name: "Plugins".to_owned(),
                     path: "settings://plugins".to_owned(),
                     attributes: 0,
@@ -1442,6 +1483,20 @@ mod host {
                     if let Some(store) = &mut self.history {
                         let value = if self.calculator_enabled { "1" } else { "0" };
                         let _ = store.set_setting("plugin.calculator", value);
+                    }
+                }
+                "idle-timeout" => {
+                    self.idle_timeout_ms = match self.idle_timeout_ms {
+                        0 => 3000,
+                        3000 => 5000,
+                        5000 => 10000,
+                        10000 => 30000,
+                        _ => 0,
+                    };
+                    self.note_activity();
+                    if let Some(store) = &mut self.history {
+                        let _ = store
+                            .set_setting("ui.idle_timeout_ms", &self.idle_timeout_ms.to_string());
                     }
                 }
                 key if key.starts_with("alias/") => {
@@ -1786,6 +1841,7 @@ mod host {
                 if id == EDIT_ID && notification == EN_CHANGE && !pointer.is_null() {
                     // SAFETY: pointer is a live State.
                     unsafe {
+                        (*pointer).note_activity();
                         (*pointer).query_from_edit();
                     }
                     // SAFETY: invalidate the result area.
@@ -1814,13 +1870,20 @@ mod host {
                 if visible {
                     // SAFETY: hide the overlay.
                     unsafe {
-                        ShowWindow(hwnd, SW_HIDE);
+                        hide_overlay(hwnd, pointer, false);
                     }
                 } else {
                     // SAFETY: show, focus, and reposition the overlay on the cursor monitor.
                     unsafe {
                         if !pointer.is_null() {
-                            let dpi = (*pointer).dpi;
+                            let state = &mut *pointer;
+                            let foreground = GetForegroundWindow();
+                            if !foreground.is_null() && foreground != hwnd {
+                                state.previous_foreground = foreground as isize;
+                            }
+                            state.note_activity();
+                            SetTimer(hwnd, IDLE_TIMER, 100, None);
+                            let dpi = state.dpi;
                             let (width, height) = golden_window_size();
                             let (x, y) =
                                 overlay_position(width, height, scale_at(INPUT_HEIGHT / 2, dpi));
@@ -1922,9 +1985,9 @@ mod host {
                     }
                 }
                 if !cancelled {
-                    // SAFETY: hide the overlay.
+                    // SAFETY: hide the overlay and return focus to the previous app.
                     unsafe {
-                        ShowWindow(hwnd, SW_HIDE);
+                        hide_overlay(hwnd, pointer, true);
                     }
                 }
                 0
@@ -1933,9 +1996,15 @@ mod host {
                 if !pointer.is_null() {
                     // SAFETY: activate the existing overlay.
                     unsafe {
+                        let state = &mut *pointer;
+                        let foreground = GetForegroundWindow();
+                        if !foreground.is_null() && foreground != hwnd {
+                            state.previous_foreground = foreground as isize;
+                        }
+                        state.note_activity();
+                        SetTimer(hwnd, IDLE_TIMER, 100, None);
                         ShowWindow(hwnd, SW_SHOW);
-                        SetForegroundWindow(hwnd);
-                        SetFocus((*pointer).edit);
+                        activate_overlay(hwnd, state.edit);
                         InvalidateRect(hwnd, null(), 0);
                     }
                 }
@@ -1946,6 +2015,7 @@ mod host {
                     let y = ((lparam >> 16) & 0xffff) as i16 as i32;
                     // SAFETY: pointer is a live State.
                     unsafe {
+                        (*pointer).note_activity();
                         if y < (*pointer).scale(INPUT_HEIGHT) {
                             SetFocus((*pointer).edit);
                             return 0;
@@ -1971,8 +2041,18 @@ mod host {
                     let delta = ((wparam >> 16) & 0xffff) as i16 as i32;
                     // SAFETY: pointer is a live State.
                     unsafe {
+                        (*pointer).note_activity();
                         (*pointer).scroll_by(if delta > 0 { -3 } else { 3 });
                         InvalidateRect(hwnd, null(), 0);
+                    }
+                }
+                0
+            }
+            WM_MOUSEMOVE => {
+                if !pointer.is_null() {
+                    // SAFETY: pointer is a live State.
+                    unsafe {
+                        (*pointer).note_activity();
                     }
                 }
                 0
@@ -1981,7 +2061,7 @@ mod host {
                 if !pointer.is_null() {
                     // SAFETY: hide when another application takes focus.
                     unsafe {
-                        ShowWindow(hwnd, SW_HIDE);
+                        hide_overlay(hwnd, pointer, false);
                     }
                 }
                 0
@@ -1991,7 +2071,7 @@ mod host {
                 if action == WA_INACTIVE {
                     // SAFETY: hide when focus leaves the overlay.
                     unsafe {
-                        ShowWindow(hwnd, SW_HIDE);
+                        hide_overlay(hwnd, pointer, false);
                     }
                 }
                 0
@@ -1999,6 +2079,21 @@ mod host {
             WM_ERASEBKGND => 1,
             WM_PAINT => {
                 paint(hwnd, pointer);
+                0
+            }
+            WM_TIMER if wparam == IDLE_TIMER => {
+                if !pointer.is_null() && unsafe { IsWindowVisible(hwnd) } != 0 {
+                    // SAFETY: pointer is a live State.
+                    unsafe {
+                        let state = &*pointer;
+                        if state.idle_timeout_ms > 0
+                            && state.last_activity.elapsed()
+                                >= Duration::from_millis(state.idle_timeout_ms)
+                        {
+                            hide_overlay(hwnd, pointer, true);
+                        }
+                    }
+                }
                 0
             }
             WM_TIMER if wparam == SMOKE_TIMER => {
@@ -2013,7 +2108,7 @@ mod host {
                 if wparam == VK_ESCAPE as usize {
                     // SAFETY: hide the overlay.
                     unsafe {
-                        ShowWindow(hwnd, SW_HIDE);
+                        hide_overlay(hwnd, pointer, true);
                     }
                 }
                 0
@@ -2085,6 +2180,12 @@ mod host {
             unsafe { (*pointer).ime_composing }
         };
         if message == WM_KEYDOWN && !is_ime_composing(hwnd) && !tracked {
+            if !pointer.is_null() {
+                // SAFETY: pointer is a live State.
+                unsafe {
+                    (*pointer).note_activity();
+                }
+            }
             let navigation = match wparam as u16 {
                 VK_UP => Some(NAV_UP),
                 VK_DOWN => Some(NAV_DOWN),
@@ -2195,6 +2296,26 @@ mod host {
         SendMessageW(edit, WM_SETFOCUS, 0, 0);
         if attached {
             AttachThreadInput(current_thread, foreground_thread, 0);
+        }
+    }
+
+    unsafe fn hide_overlay(hwnd: HWND, pointer: *mut State, restore_focus: bool) {
+        ShowWindow(hwnd, SW_HIDE);
+        KillTimer(hwnd, IDLE_TIMER);
+        if restore_focus && !pointer.is_null() {
+            let previous = (*pointer).previous_foreground;
+            if previous != 0 && previous != hwnd as isize {
+                let previous = previous as HWND;
+                let mut process_id = 0u32;
+                let previous_thread = GetWindowThreadProcessId(previous, &mut process_id);
+                let current_thread = GetCurrentThreadId();
+                let attached = previous_thread != current_thread
+                    && AttachThreadInput(current_thread, previous_thread, 1) != 0;
+                SetForegroundWindow(previous);
+                if attached {
+                    AttachThreadInput(current_thread, previous_thread, 0);
+                }
+            }
         }
     }
 
