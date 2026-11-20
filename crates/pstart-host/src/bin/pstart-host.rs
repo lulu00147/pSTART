@@ -95,7 +95,7 @@ mod host {
     const INPUT_HEIGHT: i32 = 32;
     const LIST_TOP: i32 = INPUT_HEIGHT;
     const COUNT_WIDTH: i32 = 48;
-    const VISIBLE_ROWS: usize = 7;
+    const VISIBLE_ROWS: usize = 9;
     const EDIT_ID: usize = 1001;
     const HOTKEY_ID: i32 = 1;
     const SMOKE_TIMER: usize = 1;
