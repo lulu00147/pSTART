@@ -347,6 +347,14 @@ mod host {
         items
     }
 
+    #[derive(Default)]
+    struct DisplayRow {
+        source_name: String,
+        source_path: String,
+        name: String,
+        path: String,
+    }
+
     struct State {
         hwnd: HWND,
         edit: HWND,
@@ -388,6 +396,10 @@ mod host {
         idle_timeout_ms: u64,
         last_activity: Instant,
         published_count: usize,
+        display_rows: Vec<DisplayRow>,
+        display_width: i32,
+        display_unit: i32,
+        display_start: usize,
     }
 
     impl State {
@@ -540,6 +552,10 @@ mod host {
                 idle_timeout_ms,
                 last_activity: Instant::now(),
                 published_count: usize::MAX,
+                display_rows: Vec::new(),
+                display_width: 0,
+                display_unit: 0,
+                display_start: 0,
             }
         }
 
@@ -549,6 +565,35 @@ mod host {
 
         fn note_activity(&mut self) {
             self.last_activity = Instant::now();
+        }
+
+        fn ensure_display_rows(&mut self, width: i32) {
+            let unit = self.scale(8).max(1);
+            if width != self.display_width
+                || unit != self.display_unit
+                || self.display_start != self.scroll
+            {
+                self.display_rows.clear();
+                self.display_width = width;
+                self.display_unit = unit;
+                self.display_start = self.scroll;
+            }
+            let count = self
+                .items
+                .len()
+                .saturating_sub(self.scroll)
+                .min(VISIBLE_ROWS);
+            self.display_rows.resize_with(count, DisplayRow::default);
+            let (items, rows) = (&self.items, &mut self.display_rows);
+            for (offset, row) in rows.iter_mut().enumerate() {
+                let item = &items[self.scroll + offset];
+                if row.source_name != item.name || row.source_path != item.path {
+                    row.source_name.clone_from(&item.name);
+                    row.source_path.clone_from(&item.path);
+                    row.name = clipped_text(&item.name, width, unit);
+                    row.path = clipped_text(&item.path, width, unit);
+                }
+            }
         }
 
         fn idle_timeout_label(&self) -> String {
@@ -1863,6 +1908,9 @@ mod host {
                         // SAFETY: only the result area changed.
                         unsafe {
                             invalidate_results(hwnd, pointer);
+                            if env::var_os("PSTART_SYNC_PAINT").is_some() {
+                                UpdateWindow(hwnd);
+                            }
                         }
                     }
                 }
@@ -1906,13 +1954,17 @@ mod host {
                 if !pointer.is_null() {
                     // SAFETY: pointer is a live State.
                     unsafe {
-                        let edit_empty = GetWindowTextLengthW((*pointer).edit) <= 0;
+                        let state = &mut *pointer;
+                        let old_selected = state.selected;
+                        let old_scroll = state.scroll;
+                        let edit_empty = GetWindowTextLengthW(state.edit) <= 0;
                         if edit_empty && matches!(message, NAV_UP | NAV_DOWN) {
-                            (*pointer).recall_history(message == NAV_UP);
+                            state.recall_history(message == NAV_UP);
+                            InvalidateRect(hwnd, null(), 0);
                         } else {
-                            (*pointer).move_selection(if message == NAV_UP { -1 } else { 1 });
+                            state.move_selection(if message == NAV_UP { -1 } else { 1 });
+                            invalidate_selection_change(hwnd, pointer, old_selected, old_scroll);
                         }
-                        InvalidateRect(hwnd, null(), 0);
                     }
                 }
                 0
@@ -2029,8 +2081,15 @@ mod host {
                                 ((y - list_top) / (*pointer).row_height(client.bottom)) as usize;
                             let index = (*pointer).scroll + row;
                             if index < (*pointer).items.len() {
+                                let old_selected = (*pointer).selected;
+                                let old_scroll = (*pointer).scroll;
                                 (*pointer).select_index(index);
-                                InvalidateRect(hwnd, null(), 0);
+                                invalidate_selection_change(
+                                    hwnd,
+                                    pointer,
+                                    old_selected,
+                                    old_scroll,
+                                );
                             }
                         }
                     }
@@ -2352,6 +2411,49 @@ mod host {
         }
     }
 
+    unsafe fn invalidate_selection_change(
+        hwnd: HWND,
+        pointer: *mut State,
+        old_selected: Option<usize>,
+        old_scroll: usize,
+    ) {
+        let state = &*pointer;
+        if state.scroll != old_scroll {
+            invalidate_results(hwnd, pointer);
+            return;
+        }
+        let mut client = RECT::default();
+        // SAFETY: client is writable and hwnd is live.
+        unsafe {
+            GetClientRect(hwnd, &mut client);
+        }
+        let row_height = state.row_height(client.bottom);
+        let invalidate = |index: usize| {
+            if index < state.scroll || index >= state.scroll + VISIBLE_ROWS {
+                return;
+            }
+            let top = state.scale(LIST_TOP) + (index - state.scroll) as i32 * row_height;
+            let row = RECT {
+                left: 0,
+                top,
+                right: client.right,
+                bottom: top + row_height,
+            };
+            // SAFETY: hwnd is live and row is a valid rectangle.
+            unsafe {
+                InvalidateRect(hwnd, &row, 0);
+            }
+        };
+        if let Some(old) = old_selected {
+            invalidate(old);
+        }
+        if let Some(new) = state.selected {
+            if Some(new) != old_selected {
+                invalidate(new);
+            }
+        }
+    }
+
     unsafe fn layout(hwnd: HWND, edit: HWND, dpi: i32) {
         let mut client = RECT::default();
         // SAFETY: client is writable and hwnd is live.
@@ -2445,16 +2547,26 @@ mod host {
         };
         let width = client.right - client.left;
         let height = client.bottom - client.top;
+        if !pointer.is_null() {
+            // SAFETY: pointer is a live State.
+            (*pointer).ensure_display_rows(client.right);
+        }
         let target = if pointer.is_null() {
             hdc
         } else {
             // SAFETY: pointer is a live State.
             unsafe { ensure_paint_buffer(&mut *pointer, hdc, width, height) }
         };
+        let dirty = paint.rcPaint;
+        let fill = if dirty.right > dirty.left && dirty.bottom > dirty.top {
+            dirty
+        } else {
+            client
+        };
         // SAFETY: GDI brush creation and fill.
         unsafe {
             let background = CreateSolidBrush(skin.background);
-            FillRect(target, &client, background);
+            FillRect(target, &fill, background);
             DeleteObject(background);
         }
         if !pointer.is_null() {
@@ -2470,7 +2582,7 @@ mod host {
                 let old = SelectObject(target, font);
                 SetBkMode(target, TRANSPARENT as i32);
                 let row_height = state.row_height(height);
-                for (index, item) in state
+                for (index, _) in state
                     .items
                     .iter()
                     .enumerate()
@@ -2478,33 +2590,28 @@ mod host {
                     .take(VISIBLE_ROWS)
                 {
                     let top = state.scale(LIST_TOP) + (index - state.scroll) as i32 * row_height;
+                    let bottom = top + row_height;
+                    if bottom <= dirty.top || top >= dirty.bottom {
+                        continue;
+                    }
                     if state.selected == Some(index) {
                         let selected = RECT {
                             left: 0,
                             top,
                             right: client.right,
-                            bottom: top + row_height,
+                            bottom,
                         };
                         let brush = CreateSolidBrush(state.skin.selection);
                         FillRect(target, &selected, brush);
                         DeleteObject(brush);
                     }
-                    draw_text_clipped(
+                    let display = &state.display_rows[index - state.scroll];
+                    draw_text(target, &display.name, 0, top, state.skin.text);
+                    draw_text(
                         target,
-                        &item.name,
-                        0,
-                        top,
-                        client.right,
-                        state.scale(8),
-                        state.skin.text,
-                    );
-                    draw_text_clipped(
-                        target,
-                        &item.path,
+                        &display.path,
                         0,
                         top + state.scale(20),
-                        client.right,
-                        state.scale(8),
                         state.skin.path,
                     );
                 }
@@ -2542,26 +2649,14 @@ mod host {
         }
     }
 
-    unsafe fn draw_text_clipped(
-        hdc: HDC,
-        text: &str,
-        x: i32,
-        y: i32,
-        width: i32,
-        unit_width: i32,
-        color: COLORREF,
-    ) {
+    fn clipped_text(text: &str, width: i32, unit_width: i32) -> String {
         let max_units = ((width.max(1) / unit_width.max(1)) as usize).max(1);
         let mut utf16: Vec<u16> = text.encode_utf16().take(max_units).collect();
         if text.encode_utf16().count() > max_units {
             utf16.truncate(max_units.saturating_sub(1));
             utf16.push(0x2026);
         }
-        // SAFETY: hdc is valid for painting; utf16 pointer/length are valid.
-        unsafe {
-            SetTextColor(hdc, color);
-            TextOutW(hdc, x, y, utf16.as_ptr(), utf16.len() as i32);
-        }
+        String::from_utf16_lossy(&utf16)
     }
 
     unsafe fn draw_text(hdc: HDC, text: &str, x: i32, y: i32, color: COLORREF) {
