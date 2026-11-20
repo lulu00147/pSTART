@@ -43,13 +43,12 @@ mod host {
         LRESULT, RECT, WPARAM,
     };
     use windows_sys::Win32::Graphics::Gdi::{
-        BeginPaint, BitBlt, CombineRgn, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
-        CreateRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect,
-        GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint, SelectObject, SetBkMode,
-        SetTextColor, SetWindowRgn, TextOutW, UpdateWindow, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
-        DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, FF_DONTCARE, FW_NORMAL, HDC, HFONT,
-        MONITORINFO, MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, PAINTSTRUCT, RGN_OR, SRCCOPY,
-        TRANSPARENT,
+        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
+        CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, GetMonitorInfoW,
+        GetStockObject, InvalidateRect, MonitorFromPoint, SelectObject, SetBkMode, SetTextColor,
+        TextOutW, UpdateWindow, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
+        DEFAULT_GUI_FONT, DEFAULT_PITCH, FF_DONTCARE, FW_NORMAL, HDC, HFONT, MONITORINFO,
+        MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -89,11 +88,11 @@ mod host {
         WS_BORDER, WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
     };
 
-    const WIDTH: i32 = 720;
-    const HEIGHT: i32 = 440;
-    const INPUT_MARGIN: i32 = 16;
+    const WIDTH: i32 = 688;
+    const HEIGHT: i32 = 428;
+    const INPUT_MARGIN: i32 = 0;
     const INPUT_HEIGHT: i32 = 32;
-    const LIST_TOP: i32 = INPUT_MARGIN + INPUT_HEIGHT + 8;
+    const LIST_TOP: i32 = INPUT_HEIGHT + 8;
     const ROW_HEIGHT: i32 = 52;
     const VISIBLE_ROWS: usize = 7;
     const EDIT_ID: usize = 1001;
@@ -2143,40 +2142,10 @@ mod host {
             GetClientRect(hwnd, &mut client);
         }
         let width = client.right - client.left;
-        let height = client.bottom - client.top;
-        let margin = scale_at(INPUT_MARGIN, dpi);
-        let input_height = scale_at(INPUT_HEIGHT, dpi);
         if !edit.is_null() {
             // SAFETY: edit is a live child.
             unsafe {
-                MoveWindow(edit, margin, margin, width - margin * 2, input_height, 1);
-            }
-        }
-        // SAFETY: region coordinates come from the live client rect.
-        unsafe {
-            let input_region = CreateRectRgn(margin, margin, width - margin, margin + input_height);
-            let content_region =
-                CreateRectRgn(margin, margin + input_height, width - margin, height);
-            let region = CreateRectRgn(0, 0, 0, 0);
-            if !input_region.is_null()
-                && !content_region.is_null()
-                && !region.is_null()
-                && CombineRgn(region, input_region, content_region, RGN_OR) != 0
-                && SetWindowRgn(hwnd, region, 1) != 0
-            {
-                // The system owns the region after a successful SetWindowRgn.
-                DeleteObject(input_region);
-                DeleteObject(content_region);
-                return;
-            }
-            if !region.is_null() {
-                DeleteObject(region);
-            }
-            if !input_region.is_null() {
-                DeleteObject(input_region);
-            }
-            if !content_region.is_null() {
-                DeleteObject(content_region);
+                MoveWindow(edit, 0, 0, width, scale_at(INPUT_HEIGHT, dpi), 1);
             }
         }
     }
