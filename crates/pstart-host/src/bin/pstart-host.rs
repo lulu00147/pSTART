@@ -359,6 +359,7 @@ mod host {
         aliases: std::collections::HashMap<String, String>,
         history_tx: Option<Sender<String>>,
         query_started: Option<Instant>,
+        result_generation: u64,
         history_cache: Option<Vec<String>>,
         history_cursor: Option<usize>,
         pending_history_query: Option<String>,
@@ -491,6 +492,7 @@ mod host {
                 aliases,
                 history_tx,
                 query_started: None,
+                result_generation: 0,
                 history_cache: None,
                 history_cursor: None,
                 pending_history_query: None,
@@ -525,6 +527,11 @@ mod host {
                 )
             } else {
                 format!("pSTART - {}", self.items.len())
+            };
+            let title = if env::var_os("PSTART_SMOKE_GENERATION").is_some() {
+                format!("{title} - g{}", self.result_generation)
+            } else {
+                title
             };
             let title = wide(&title);
             // SAFETY: hwnd is the live overlay window.
@@ -786,6 +793,7 @@ mod host {
                         self.scroll = 0;
                     }
                 }
+                self.result_generation = self.result_generation.wrapping_add(1);
                 self.publish_result_count();
                 changed = true;
                 if let Some(started) = self.query_started.take() {
@@ -1639,7 +1647,7 @@ mod host {
                 .ok()
                 .and_then(|value| value.parse::<u32>().ok())
                 .unwrap_or(250)
-                .clamp(100, 60_000);
+                .clamp(100, 300_000);
             // SAFETY: hwnd is live.
             unsafe {
                 ShowWindow(hwnd, SW_SHOW);

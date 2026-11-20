@@ -142,7 +142,7 @@ impl SqliteSearch {
         if rows.len() >= limit {
             return Ok(false);
         }
-        let (extra, capped) = if query_lower.chars().count() >= 3 {
+        let (extra, capped) = if query_lower.len() >= 3 {
             self.trigram_rows(query_lower, limit)?
         } else {
             self.like_rows(query_lower, limit)?
@@ -364,6 +364,7 @@ mod tests {
                     record(10, 5, "docs", true),
                     record(11, 10, "alpha.txt", false),
                     record(12, 10, "alphabet.txt", false),
+                    record(13, 10, "报告.txt", false),
                 ],
                 deletes: Vec::new(),
                 checkpoint: Checkpoint {
@@ -497,6 +498,13 @@ mod tests {
         let (_directory, search) = fixture();
         let outcome = search.search("ph", 10).unwrap();
         assert_eq!(outcome.hits.len(), 2);
+    }
+
+    #[test]
+    fn short_chinese_substring_uses_trigram(/*covered*/) {
+        let (_directory, search) = fixture();
+        let outcome = search.search("告", 10).unwrap();
+        assert!(outcome.hits.iter().any(|hit| hit.item.name == "报告.txt"));
     }
 
     #[test]

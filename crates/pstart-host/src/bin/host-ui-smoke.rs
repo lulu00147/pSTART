@@ -142,12 +142,15 @@ mod smoke {
         let mut command = Command::new(&exe);
         command
             .arg("--smoke")
-            .env("PSTART_SMOKE_MS", if external { "30000" } else { "25000" })
+            .env("PSTART_SMOKE_MS", if external { "120000" } else { "25000" })
             .env("PSTART_SMOKE_TITLE", "1")
             .env("PSTART_SOCKET", &socket)
             .env("PSTART_HOST_DB", &history_path);
         if external {
             command.env("PSTART_SMOKE_SELECTION", "1");
+            if std::env::var_os("PSTART_UI_BENCH_RANDOM").is_some() {
+                command.env("PSTART_SMOKE_GENERATION", "1");
+            }
         } else {
             command
                 .env("PSTART_FORCE_DPI", "144")
@@ -331,6 +334,35 @@ mod smoke {
                     SendMessageW(edit, WM_KEYDOWN, VK_HOME as usize, 0);
                 }
                 wait_selected(hwnd, 1)?;
+            }
+            if external {
+                if let Ok(value) = std::env::var("PSTART_UI_BENCH_RANDOM") {
+                    if let Ok(iterations) = value.parse::<usize>() {
+                        if iterations > 0 {
+                            let mut generation = parse_generation(&window_text(hwnd)).unwrap_or(0);
+                            let mut samples = Vec::with_capacity(iterations);
+                            for query in random_queries(iterations) {
+                                generation = generation.wrapping_add(1);
+                                let started = Instant::now();
+                                send_text(edit, &query);
+                                wait_generation(hwnd, generation, Duration::from_secs(3))?;
+                                samples.push(started.elapsed().as_micros());
+                            }
+                            samples.sort_unstable();
+                            let p50 = samples[samples.len() / 2];
+                            let p95_index = (samples.len() * 95).div_ceil(100).saturating_sub(1);
+                            let p95 = samples[p95_index];
+                            let p99_index = (samples.len() * 99).div_ceil(100).saturating_sub(1);
+                            let p99 = samples[p99_index];
+                            let max = *samples.last().unwrap_or(&0);
+                            println!(
+                                "ui_random n={iterations} p50_us={p50} p95_us={p95} p99_us={p99} max_us={max}"
+                            );
+                            kill(&mut first);
+                            return Ok(());
+                        }
+                    }
+                }
             }
             if let Ok(value) = std::env::var("PSTART_UI_BENCH") {
                 if let Ok(iterations) = value.parse::<usize>() {
@@ -1013,6 +1045,27 @@ mod smoke {
         Some((count, selected))
     }
 
+    fn parse_generation(title: &str) -> Option<u64> {
+        title.rsplit(" - ").next()?.strip_prefix('g')?.parse().ok()
+    }
+
+    fn wait_generation(hwnd: HWND, expected: u64, timeout: Duration) -> Result<(), Box<dyn Error>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if parse_generation(&window_text(hwnd)) == Some(expected) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "generation did not reach {expected}; title={}",
+                    window_text(hwnd)
+                )
+                .into());
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     fn press(vk: u8) {
         // SAFETY: synthetic keyboard input is only used by smoke probes.
         unsafe {
@@ -1236,6 +1289,40 @@ mod smoke {
             }
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn random_queries(count: usize) -> Vec<String> {
+        const ASCII: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+        const CHINESE: &[char] = &[
+            '文', '件', '配', '置', '搜', '索', '路', '径', '系', '统', '设', '置', '桌', '面',
+            '下', '载', '文', '档', '图', '片', '视', '频', '音', '乐', '报', '告', '数', '据',
+            '项', '目', '测', '试', '用', '户', '目', '录', '缓', '存', '备', '份', '日', '志',
+        ];
+        let mut seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0x9e37_79b9_7f4a_7c15, |value| value.as_nanos() as u64)
+            | 1;
+        let mut next = || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            seed
+        };
+        (0..count)
+            .map(|_| {
+                let length = (next() % 10 + 1) as usize;
+                let mut text = String::with_capacity(length);
+                for _ in 0..length {
+                    if next() % 3 == 0 {
+                        text.push(CHINESE[(next() % CHINESE.len() as u64) as usize]);
+                    } else {
+                        text.push(char::from(ASCII[(next() % ASCII.len() as u64) as usize]));
+                    }
+                }
+                if text.is_ascii() {
+                    text.push(CHINESE[(next() % CHINESE.len() as u64) as usize]);
+                }
+                text
+            })
+            .collect()
     }
 
     fn wait_for_window(timeout: Duration) -> Result<HWND, Box<dyn Error>> {
