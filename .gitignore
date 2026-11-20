@@ -12,3 +12,4 @@
 .env
 .env.*
 __pycache__/
+/engineering/loop/report/
