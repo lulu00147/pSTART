@@ -72,25 +72,27 @@ mod host {
     };
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, CallWindowProcW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-        FindWindowW, GetClientRect, GetCursorPos, GetMessageW, GetParent, GetSystemMetrics,
-        GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible, KillTimer,
-        LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
-        SetForegroundWindow, SetProcessDPIAware, SetTimer, SetWindowLongPtrW, SetWindowPos,
-        SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
-        CS_HREDRAW, CS_VREDRAW, EN_CHANGE, ES_AUTOHSCROLL, ES_LEFT, GWLP_USERDATA, GWLP_WNDPROC,
-        HC_ACTION, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, MSG, SM_CXSCREEN, SM_CYSCREEN,
-        SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WA_INACTIVE, WH_KEYBOARD_LL, WM_ACTIVATE,
-        WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_HOTKEY,
-        WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP,
-        WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT, WM_SETFONT, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP,
-        WM_TIMER, WNDCLASSW, WNDPROC, WS_BORDER, WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-        WS_POPUP, WS_VISIBLE,
+        BringWindowToTop, CallNextHookEx, CallWindowProcW, CreateWindowExW, DefWindowProcW,
+        DispatchMessageW, FindWindowW, GetClientRect, GetCursorPos, GetMessageW, GetParent,
+        GetSystemMetrics, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
+        KillTimer, LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
+        SendMessageW, SetForegroundWindow, SetProcessDPIAware, SetTimer, SetWindowLongPtrW,
+        SetWindowPos, SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage,
+        UnhookWindowsHookEx, CS_HREDRAW, CS_VREDRAW, EN_CHANGE, ES_AUTOHSCROLL, ES_LEFT,
+        GWLP_USERDATA, GWLP_WNDPROC, HC_ACTION, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, MSG,
+        SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
+        WA_INACTIVE, WH_KEYBOARD_LL, WM_ACTIVATE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
+        WM_ERASEBKGND, WM_HOTKEY, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
+        WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT,
+        WM_SETFOCUS, WM_SETFONT, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WNDPROC,
+        WS_BORDER, WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
     };
 
     const WIDTH: i32 = 720;
     const HEIGHT: i32 = 440;
-    const LIST_TOP: i32 = 64;
+    const INPUT_MARGIN: i32 = 16;
+    const INPUT_HEIGHT: i32 = 32;
+    const LIST_TOP: i32 = INPUT_MARGIN + INPUT_HEIGHT + 8;
     const ROW_HEIGHT: i32 = 52;
     const VISIBLE_ROWS: usize = 7;
     const EDIT_ID: usize = 1001;
@@ -1630,7 +1632,11 @@ mod host {
         let dpi = initial_dpi();
         let width = scale_at(WIDTH, dpi);
         let height = scale_at(HEIGHT, dpi);
-        let (x, y) = overlay_position(width, height);
+        let (x, y) = overlay_position(
+            width,
+            height,
+            scale_at(INPUT_MARGIN + INPUT_HEIGHT / 2, dpi),
+        );
         let title = wide("pSTART");
         // SAFETY: class is registered; title lives for the call.
         let hwnd = unsafe {
@@ -1811,24 +1817,22 @@ mod host {
                             let dpi = (*pointer).dpi;
                             let width = scale_at(WIDTH, dpi);
                             let height = scale_at(HEIGHT, dpi);
-                            let (x, y) = overlay_position(width, height);
+                            let (x, y) = overlay_position(
+                                width,
+                                height,
+                                scale_at(INPUT_MARGIN + INPUT_HEIGHT / 2, dpi),
+                            );
                             if let Ok(mut apps) = (*pointer).apps.lock() {
                                 apps.refresh(&start_menu_roots());
                             }
-                            SetWindowPos(
-                                hwnd,
-                                null_mut(),
-                                x,
-                                y,
-                                width,
-                                height,
-                                SWP_NOZORDER | SWP_NOACTIVATE,
-                            );
+                            SetWindowPos(hwnd, null_mut(), x, y, width, height, SWP_NOZORDER);
                         }
-                        ShowWindow(hwnd, SW_SHOW);
+                        ShowWindow(hwnd, SW_SHOWNORMAL);
+                        BringWindowToTop(hwnd);
                         SetForegroundWindow(hwnd);
                         if !pointer.is_null() {
                             SetFocus((*pointer).edit);
+                            SendMessageW((*pointer).edit, WM_SETFOCUS, 0, 0);
                         }
                         InvalidateRect(hwnd, null(), 0);
                     }
@@ -2139,7 +2143,7 @@ mod host {
         }
         let width = client.right - client.left;
         if !edit.is_null() {
-            let margin = scale_at(16, dpi);
+            let margin = scale_at(INPUT_MARGIN, dpi);
             // SAFETY: edit is a live child.
             unsafe {
                 MoveWindow(
@@ -2147,7 +2151,7 @@ mod host {
                     margin,
                     margin,
                     width - margin * 2,
-                    scale_at(32, dpi),
+                    scale_at(INPUT_HEIGHT, dpi),
                     1,
                 );
             }
@@ -2254,13 +2258,6 @@ mod host {
                 };
                 let old = SelectObject(target, font);
                 SetBkMode(target, TRANSPARENT as i32);
-                draw_text(
-                    target,
-                    "pSTART",
-                    state.scale(20),
-                    state.scale(4),
-                    rgb(120, 180, 255),
-                );
                 for (index, item) in state
                     .items
                     .iter()
@@ -2375,7 +2372,7 @@ mod host {
         value * dpi / 96
     }
 
-    fn overlay_position(width: i32, height: i32) -> (i32, i32) {
+    fn overlay_position(width: i32, height: i32, input_anchor_y: i32) -> (i32, i32) {
         // SAFETY: all pointers refer to initialized locals.
         let (left, top, right, bottom) = unsafe {
             let mut cursor = POINT { x: 0, y: 0 };
@@ -2430,7 +2427,7 @@ mod host {
                 )
             }
         };
-        place_in_work_area(left, top, right, bottom, width, height)
+        place_in_work_area(left, top, right, bottom, width, height, input_anchor_y)
     }
 
     fn place_in_work_area(
@@ -2440,9 +2437,11 @@ mod host {
         bottom: i32,
         width: i32,
         height: i32,
+        input_anchor_y: i32,
     ) -> (i32, i32) {
         let x = left + ((right - left - width) / 2).max(0);
-        let y = top + ((bottom - top - height) / 4).max(0);
+        let center_y = top + (bottom - top) / 2;
+        let y = (center_y - input_anchor_y).clamp(top, (bottom - height).max(top));
         (x, y)
     }
 
@@ -2609,20 +2608,23 @@ mod host {
 
         #[test]
         fn center_on_primary_work_area() {
-            assert_eq!(place_in_work_area(0, 0, 1920, 1040, 720, 440), (600, 150));
+            assert_eq!(
+                place_in_work_area(0, 0, 1920, 1040, 720, 440, 32),
+                (600, 488)
+            );
         }
 
         #[test]
         fn center_on_negative_monitor() {
             assert_eq!(
-                place_in_work_area(-1920, 0, 0, 1040, 720, 440),
-                (-1320, 150)
+                place_in_work_area(-1920, 0, 0, 1040, 720, 440, 32),
+                (-1320, 488)
             );
         }
 
         #[test]
         fn clamps_to_small_work_area() {
-            assert_eq!(place_in_work_area(0, 0, 600, 300, 720, 440), (0, 0));
+            assert_eq!(place_in_work_area(0, 0, 600, 300, 720, 440, 32), (0, 0));
         }
 
         #[test]
