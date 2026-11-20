@@ -1629,8 +1629,9 @@ mod host {
             return Err(io::Error::last_os_error().into());
         }
         // SAFETY: all pointers are valid for the call.
+        let dpi = initial_dpi();
         let (width, height) = golden_window_size();
-        let (x, y) = overlay_position(width, height, height / 2);
+        let (x, y) = overlay_position(width, height, scale_at(INPUT_HEIGHT / 2, dpi));
         let title = wide("pSTART");
         // SAFETY: class is registered; title lives for the call.
         let hwnd = unsafe {
@@ -1808,8 +1809,10 @@ mod host {
                     // SAFETY: show, focus, and reposition the overlay on the cursor monitor.
                     unsafe {
                         if !pointer.is_null() {
+                            let dpi = (*pointer).dpi;
                             let (width, height) = golden_window_size();
-                            let (x, y) = overlay_position(width, height, height / 2);
+                            let (x, y) =
+                                overlay_position(width, height, scale_at(INPUT_HEIGHT / 2, dpi));
                             if let Ok(mut apps) = (*pointer).apps.lock() {
                                 apps.refresh(&start_menu_roots());
                             }
