@@ -44,12 +44,12 @@ mod host {
     };
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
-        CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, GetDC, GetMonitorInfoW,
-        GetStockObject, InvalidateRect, MonitorFromPoint, ReleaseDC, SelectObject, SetBkMode,
-        SetTextColor, TextOutW, UpdateWindow, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
-        DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, FF_DONTCARE, FW_NORMAL, HDC, HFONT,
-        MONITORINFO, MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY,
-        TRANSPARENT,
+        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
+        GetMonitorInfoW, GetStockObject, InvalidateRect, MonitorFromPoint, ReleaseDC, SelectObject,
+        SetBkMode, SetTextColor, TextOutW, UpdateWindow, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
+        DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DT_END_ELLIPSIS, DT_NOPREFIX,
+        DT_SINGLELINE, FF_DONTCARE, FW_NORMAL, HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -758,7 +758,7 @@ mod host {
                 self.show_plugins();
                 return;
             }
-            if text.eq_ignore_ascii_case("/settings") {
+            if text.eq_ignore_ascii_case("/config") || text.eq_ignore_ascii_case("/settings") {
                 self.show_settings();
                 return;
             }
@@ -2335,12 +2335,13 @@ mod host {
                         FillRect(target, &selected, brush);
                         DeleteObject(brush);
                     }
-                    draw_text(target, &item.name, 0, top, state.skin.text);
-                    draw_text(
+                    draw_text_clipped(target, &item.name, 0, top, client.right, state.skin.text);
+                    draw_text_clipped(
                         target,
                         &item.path,
                         0,
                         top + state.scale(20),
+                        client.right,
                         state.skin.path,
                     );
                 }
@@ -2362,6 +2363,28 @@ mod host {
                 BitBlt(hdc, 0, 0, width, height, target, 0, 0, SRCCOPY);
             }
             EndPaint(hwnd, &paint);
+        }
+    }
+
+    unsafe fn draw_text_clipped(hdc: HDC, text: &str, x: i32, y: i32, width: i32, color: COLORREF) {
+        let text = wide(text);
+        let mut rect = RECT {
+            left: x,
+            top: y,
+            right: x + width.max(0),
+            bottom: y + 100,
+        };
+        // SAFETY: hdc and the null-terminated UTF-16 text are valid for the call.
+        unsafe {
+            SetTextColor(hdc, color);
+            SetBkMode(hdc, TRANSPARENT as i32);
+            DrawTextW(
+                hdc,
+                text.as_ptr(),
+                -1,
+                &mut rect,
+                DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            );
         }
     }
 
