@@ -12,4 +12,5 @@
 .env
 .env.*
 __pycache__/
+/github/
 /engineering/loop/report/
