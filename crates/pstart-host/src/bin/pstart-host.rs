@@ -2746,15 +2746,23 @@ mod host {
         golden_window_size_for(width, height)
     }
 
+    fn golden_ratio() -> f64 {
+        (3.0 - 5.0_f64.sqrt()) / 2.0
+    }
+
     fn golden_window_size_for(screen_width: i32, screen_height: i32) -> (i32, i32) {
-        let width = (f64::from(screen_width) * (3.0 - 5.0_f64.sqrt()) / 2.0).round() as i32;
-        let height = (f64::from(screen_height) * (3.0 - 5.0_f64.sqrt()) / 2.0).round() as i32;
+        let width = (f64::from(screen_width) * golden_ratio()).round() as i32;
+        let height = (f64::from(screen_height) * golden_ratio()).round() as i32;
         (width.max(320), height.max(240))
+    }
+
+    fn input_center_y(screen_top: i32, screen_height: i32) -> i32 {
+        screen_top + (f64::from(screen_height) * golden_ratio()).round() as i32
     }
 
     fn overlay_position(width: i32, height: i32, input_anchor_y: i32) -> (i32, i32) {
         // SAFETY: all pointers refer to initialized locals.
-        let (left, top, right, bottom) = unsafe {
+        let (left, top, right, bottom, screen_top, screen_height) = unsafe {
             let mut cursor = POINT { x: 0, y: 0 };
             if GetCursorPos(&mut cursor) != 0 {
                 let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
@@ -2781,12 +2789,16 @@ mod host {
                             info.rcWork.top,
                             info.rcWork.right,
                             info.rcWork.bottom,
+                            info.rcMonitor.top,
+                            info.rcMonitor.bottom - info.rcMonitor.top,
                         )
                     } else {
                         (
                             0,
                             0,
                             GetSystemMetrics(SM_CXSCREEN),
+                            GetSystemMetrics(SM_CYSCREEN),
+                            0,
                             GetSystemMetrics(SM_CYSCREEN),
                         )
                     }
@@ -2796,6 +2808,8 @@ mod host {
                         0,
                         GetSystemMetrics(SM_CXSCREEN),
                         GetSystemMetrics(SM_CYSCREEN),
+                        0,
+                        GetSystemMetrics(SM_CYSCREEN),
                     )
                 }
             } else {
@@ -2804,10 +2818,13 @@ mod host {
                     0,
                     GetSystemMetrics(SM_CXSCREEN),
                     GetSystemMetrics(SM_CYSCREEN),
+                    0,
+                    GetSystemMetrics(SM_CYSCREEN),
                 )
             }
         };
-        place_in_work_area(left, top, right, bottom, width, height, input_anchor_y)
+        let desired_y = input_center_y(screen_top, screen_height) - input_anchor_y;
+        place_in_work_area(left, top, right, bottom, width, height, desired_y)
     }
 
     fn place_in_work_area(
@@ -2817,11 +2834,10 @@ mod host {
         bottom: i32,
         width: i32,
         height: i32,
-        input_anchor_y: i32,
+        desired_y: i32,
     ) -> (i32, i32) {
         let x = left + ((right - left - width) / 2).max(0);
-        let center_y = top + (bottom - top) / 2;
-        let y = (center_y - input_anchor_y).clamp(top, (bottom - height).max(top));
+        let y = desired_y.clamp(top, (bottom - height).max(top));
         (x, y)
     }
 
@@ -2984,7 +3000,8 @@ mod host {
     #[cfg(test)]
     mod tests {
         use super::{
-            golden_window_size_for, place_in_work_area, query_failure_status, result_status,
+            golden_window_size_for, input_center_y, place_in_work_area, query_failure_status,
+            result_status,
         };
         use pstart_host::ClientError;
 
@@ -2995,9 +3012,16 @@ mod host {
         }
 
         #[test]
+        fn input_center_matches_screen_ratio() {
+            assert_eq!(input_center_y(0, 2160), 825);
+            assert_eq!(input_center_y(0, 1080), 413);
+            assert_eq!(input_center_y(100, 1080), 513);
+        }
+
+        #[test]
         fn center_on_primary_work_area() {
             assert_eq!(
-                place_in_work_area(0, 0, 1920, 1040, 720, 440, 32),
+                place_in_work_area(0, 0, 1920, 1040, 720, 440, 488),
                 (600, 488)
             );
         }
@@ -3005,14 +3029,14 @@ mod host {
         #[test]
         fn center_on_negative_monitor() {
             assert_eq!(
-                place_in_work_area(-1920, 0, 0, 1040, 720, 440, 32),
+                place_in_work_area(-1920, 0, 0, 1040, 720, 440, 488),
                 (-1320, 488)
             );
         }
 
         #[test]
         fn clamps_to_small_work_area() {
-            assert_eq!(place_in_work_area(0, 0, 600, 300, 720, 440, 32), (0, 0));
+            assert_eq!(place_in_work_area(0, 0, 600, 300, 720, 440, 0), (0, 0));
         }
 
         #[test]
