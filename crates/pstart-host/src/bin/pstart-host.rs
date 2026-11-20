@@ -373,6 +373,11 @@ mod host {
         scroll: usize,
         dpi: i32,
         font: HFONT,
+        paint_dc: HDC,
+        paint_bitmap: isize,
+        paint_old_bitmap: isize,
+        paint_width: i32,
+        paint_height: i32,
         status: String,
         ime_composing: bool,
     }
@@ -506,6 +511,11 @@ mod host {
                 scroll: 0,
                 dpi,
                 font,
+                paint_dc: null_mut(),
+                paint_bitmap: 0,
+                paint_old_bitmap: 0,
+                paint_width: 0,
+                paint_height: 0,
                 status: "Type to search".to_owned(),
                 ime_composing: false,
             }
@@ -1992,6 +2002,10 @@ mod host {
             WM_DESTROY => {
                 uninstall_double_ctrl_hook();
                 if !pointer.is_null() {
+                    // SAFETY: pointer is live; GDI objects are owned by State.
+                    unsafe {
+                        release_paint_buffer(&mut *pointer);
+                    }
                     // SAFETY: pointer is live; font is owned by State.
                     unsafe {
                         if !(*pointer).font.is_null() {
@@ -2140,6 +2154,65 @@ mod host {
         }
     }
 
+    unsafe fn release_paint_buffer(state: &mut State) {
+        // SAFETY: cached GDI objects belong to this state.
+        unsafe {
+            if !state.paint_dc.is_null() {
+                if state.paint_bitmap != 0 {
+                    SelectObject(state.paint_dc, state.paint_old_bitmap as _);
+                    DeleteObject(state.paint_bitmap as _);
+                }
+                DeleteDC(state.paint_dc);
+            }
+        }
+        state.paint_dc = null_mut();
+        state.paint_bitmap = 0;
+        state.paint_old_bitmap = 0;
+        state.paint_width = 0;
+        state.paint_height = 0;
+    }
+
+    unsafe fn ensure_paint_buffer(state: &mut State, hdc: HDC, width: i32, height: i32) -> HDC {
+        if !state.paint_dc.is_null() && state.paint_width == width && state.paint_height == height {
+            return state.paint_dc;
+        }
+        // SAFETY: cached GDI objects belong to this state.
+        unsafe {
+            release_paint_buffer(state);
+        }
+        if width <= 0 || height <= 0 {
+            return hdc;
+        }
+        // SAFETY: dimensions come from the live client rect.
+        let mem_dc = unsafe { CreateCompatibleDC(hdc) };
+        let bitmap = if mem_dc.is_null() {
+            null_mut()
+        } else {
+            // SAFETY: dimensions come from the live client rect.
+            unsafe { CreateCompatibleBitmap(hdc, width, height) }
+        };
+        if mem_dc.is_null() || bitmap.is_null() {
+            // SAFETY: only non-null objects are released.
+            unsafe {
+                if !bitmap.is_null() {
+                    DeleteObject(bitmap);
+                }
+                if !mem_dc.is_null() {
+                    DeleteDC(mem_dc);
+                }
+            }
+            return hdc;
+        }
+        // SAFETY: bitmap is a live GDI object and mem_dc is a live DC.
+        let old_bitmap = unsafe { SelectObject(mem_dc, bitmap) };
+        state.paint_dc = mem_dc;
+        state.paint_bitmap = bitmap as isize;
+        state.paint_old_bitmap = old_bitmap as isize;
+        state.paint_width = width;
+        state.paint_height = height;
+        mem_dc
+    }
+
     unsafe fn paint(hwnd: HWND, pointer: *mut State) {
         let mut paint = PAINTSTRUCT::default();
         // SAFETY: paint is writable and hwnd is live.
@@ -2157,21 +2230,12 @@ mod host {
         };
         let width = client.right - client.left;
         let height = client.bottom - client.top;
-        // SAFETY: GDI objects are created from the live paint DC.
-        let mem_dc = unsafe { CreateCompatibleDC(hdc) };
-        let bitmap = if mem_dc.is_null() {
-            std::ptr::null_mut()
+        let target = if pointer.is_null() {
+            hdc
         } else {
-            // SAFETY: size comes from the live client rect.
-            unsafe { CreateCompatibleBitmap(hdc, width, height) }
+            // SAFETY: pointer is a live State.
+            unsafe { ensure_paint_buffer(&mut *pointer, hdc, width, height) }
         };
-        let old_bitmap = if bitmap.is_null() {
-            std::ptr::null_mut()
-        } else {
-            // SAFETY: bitmap is a live GDI object.
-            unsafe { SelectObject(mem_dc, bitmap) }
-        };
-        let target = if bitmap.is_null() { hdc } else { mem_dc };
         // SAFETY: GDI brush creation and fill.
         unsafe {
             let background = CreateSolidBrush(skin.background);
@@ -2246,22 +2310,22 @@ mod host {
                 SelectObject(target, old);
             }
         }
-        // SAFETY: blit the completed buffer and release GDI objects.
+        // SAFETY: blit the completed buffer and release the paint DC.
         unsafe {
-            if !bitmap.is_null() {
+            if target != hdc {
                 BitBlt(hdc, 0, 0, width, height, target, 0, 0, SRCCOPY);
-                SelectObject(target, old_bitmap);
-                DeleteObject(bitmap);
-            }
-            if !mem_dc.is_null() {
-                DeleteDC(mem_dc);
             }
             EndPaint(hwnd, &paint);
         }
     }
 
     unsafe fn draw_text(hdc: HDC, text: &str, x: i32, y: i32, color: COLORREF) {
-        let utf16: Vec<u16> = text.encode_utf16().take(120).collect();
+        const DISPLAY_UNITS: usize = 48;
+        let mut utf16: Vec<u16> = text.encode_utf16().take(DISPLAY_UNITS).collect();
+        if text.encode_utf16().count() > DISPLAY_UNITS {
+            utf16.truncate(DISPLAY_UNITS - 2);
+            utf16.push(0x2026);
+        }
         // SAFETY: hdc is valid for painting; utf16 pointer/length are valid.
         unsafe {
             SetTextColor(hdc, color);
