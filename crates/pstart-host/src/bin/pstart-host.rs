@@ -369,7 +369,6 @@ mod host {
         history_cursor: Option<usize>,
         pending_history_query: Option<String>,
         history_enabled: bool,
-        apps: Arc<Mutex<AppCatalog>>,
         result_limit: u32,
         theme_dark: bool,
         skin: Skin,
@@ -388,6 +387,7 @@ mod host {
         previous_foreground: isize,
         idle_timeout_ms: u64,
         last_activity: Instant,
+        published_count: usize,
     }
 
     impl State {
@@ -521,7 +521,6 @@ mod host {
                 history_cursor: None,
                 pending_history_query: None,
                 history_enabled,
-                apps,
                 result_limit,
                 theme_dark,
                 skin,
@@ -540,6 +539,7 @@ mod host {
                 previous_foreground: 0,
                 idle_timeout_ms,
                 last_activity: Instant::now(),
+                published_count: usize::MAX,
             }
         }
 
@@ -563,11 +563,15 @@ mod host {
             ((client_height - self.scale(LIST_TOP)) / VISIBLE_ROWS as i32).max(1)
         }
 
-        fn publish_result_count(&self) {
-            if !self.edit.is_null() {
-                // SAFETY: edit is a live child; repaint the overlay counter.
-                unsafe {
-                    InvalidateRect(self.edit, null(), 0);
+        fn publish_result_count(&mut self) {
+            let count = self.items.len();
+            if count != self.published_count {
+                self.published_count = count;
+                if !self.edit.is_null() && unsafe { IsWindowVisible(self.hwnd) } != 0 {
+                    // SAFETY: edit is a live child; repaint the overlay counter.
+                    unsafe {
+                        InvalidateRect(self.edit, null(), 0);
+                    }
                 }
             }
             if env::var_os("PSTART_SMOKE_TITLE").is_none() {
@@ -1841,12 +1845,12 @@ mod host {
                 if id == EDIT_ID && notification == EN_CHANGE && !pointer.is_null() {
                     // SAFETY: pointer is a live State.
                     unsafe {
+                        let repaint = edit_needs_immediate_repaint((*pointer).edit);
                         (*pointer).note_activity();
                         (*pointer).query_from_edit();
-                    }
-                    // SAFETY: invalidate the result area.
-                    unsafe {
-                        InvalidateRect(hwnd, null(), 0);
+                        if repaint {
+                            InvalidateRect(hwnd, null(), 0);
+                        }
                     }
                 }
                 0
@@ -1856,9 +1860,9 @@ mod host {
                     // SAFETY: pointer is a live State.
                     let (changed, _) = unsafe { (*pointer).poll_query() };
                     if changed {
-                        // SAFETY: invalidate the result area.
+                        // SAFETY: only the result area changed.
                         unsafe {
-                            InvalidateRect(hwnd, null(), 0);
+                            invalidate_results(hwnd, pointer);
                         }
                     }
                 }
@@ -1887,9 +1891,6 @@ mod host {
                             let (width, height) = golden_window_size();
                             let (x, y) =
                                 overlay_position(width, height, scale_at(INPUT_HEIGHT / 2, dpi));
-                            if let Ok(mut apps) = (*pointer).apps.lock() {
-                                apps.refresh(&start_menu_roots());
-                            }
                             SetWindowPos(hwnd, null_mut(), x, y, width, height, SWP_NOZORDER);
                         }
                         ShowWindow(hwnd, SW_SHOWNORMAL);
@@ -2319,6 +2320,38 @@ mod host {
         }
     }
 
+    fn edit_needs_immediate_repaint(edit: HWND) -> bool {
+        // SAFETY: edit is a live child control.
+        let length = unsafe { GetWindowTextLengthW(edit) };
+        if length <= 0 {
+            return true;
+        }
+        let mut buffer = [0u16; 64];
+        // SAFETY: buffer is writable; edit is live.
+        let copied = unsafe { GetWindowTextW(edit, buffer.as_mut_ptr(), buffer.len() as i32) };
+        let text = String::from_utf16_lossy(&buffer[..copied.max(0) as usize]);
+        let text = text.trim_start();
+        text.is_empty() || text.starts_with('/') || text.starts_with('=')
+    }
+
+    unsafe fn invalidate_results(hwnd: HWND, pointer: *mut State) {
+        let mut client = RECT::default();
+        // SAFETY: client is writable and hwnd is live.
+        unsafe {
+            GetClientRect(hwnd, &mut client);
+        }
+        let results = RECT {
+            left: 0,
+            top: scale_at(LIST_TOP, (*pointer).dpi),
+            right: client.right,
+            bottom: client.bottom,
+        };
+        // SAFETY: hwnd is live and results is a valid rectangle.
+        unsafe {
+            InvalidateRect(hwnd, &results, 0);
+        }
+    }
+
     unsafe fn layout(hwnd: HWND, edit: HWND, dpi: i32) {
         let mut client = RECT::default();
         // SAFETY: client is writable and hwnd is live.
@@ -2490,7 +2523,20 @@ mod host {
         // SAFETY: blit the completed buffer and release the paint DC.
         unsafe {
             if target != hdc {
-                BitBlt(hdc, 0, 0, width, height, target, 0, 0, SRCCOPY);
+                let dirty = paint.rcPaint;
+                if dirty.right > dirty.left && dirty.bottom > dirty.top {
+                    BitBlt(
+                        hdc,
+                        dirty.left,
+                        dirty.top,
+                        dirty.right - dirty.left,
+                        dirty.bottom - dirty.top,
+                        target,
+                        dirty.left,
+                        dirty.top,
+                        SRCCOPY,
+                    );
+                }
             }
             EndPaint(hwnd, &paint);
         }
