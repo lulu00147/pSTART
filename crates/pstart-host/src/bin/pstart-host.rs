@@ -1087,25 +1087,44 @@ mod host {
                 return;
             };
             self.selected = Some(index);
-            self.scroll =
-                pstart_host::selection::scroll_for_selection(self.scroll, index, VISIBLE_ROWS);
+            let page = (self.scroll / VISIBLE_ROWS) * VISIBLE_ROWS;
+            self.scroll = if index < page {
+                page.saturating_sub(VISIBLE_ROWS)
+            } else if index >= page + VISIBLE_ROWS {
+                page + VISIBLE_ROWS
+            } else {
+                page
+            };
             self.clamp_scroll();
             self.publish_result_count();
         }
 
         fn scroll_by(&mut self, delta: isize) {
-            self.scroll = pstart_host::selection::scroll_by(
-                self.scroll,
-                self.items.len(),
-                VISIBLE_ROWS,
-                delta,
-            );
+            self.page_by(delta);
+        }
+
+        fn page_by(&mut self, delta: isize) {
+            if self.items.is_empty() || delta == 0 {
+                return;
+            }
+            let pages = self.items.len().div_ceil(VISIBLE_ROWS);
+            let current = self.scroll / VISIBLE_ROWS;
+            let next = if delta < 0 {
+                current.saturating_sub(1)
+            } else {
+                (current + 1).min(pages.saturating_sub(1))
+            };
+            if next == current {
+                return;
+            }
+            self.scroll = next * VISIBLE_ROWS;
+            self.selected = Some(self.scroll.min(self.items.len() - 1));
+            self.publish_result_count();
         }
 
         fn clamp_scroll(&mut self) {
-            self.scroll = self
-                .scroll
-                .min(self.items.len().saturating_sub(VISIBLE_ROWS));
+            let max_start = self.items.len().saturating_sub(1) / VISIBLE_ROWS * VISIBLE_ROWS;
+            self.scroll = ((self.scroll / VISIBLE_ROWS) * VISIBLE_ROWS).min(max_start);
         }
 
         fn show_action_confirmation(&mut self, request: ActionRequest) {
@@ -1973,12 +1992,13 @@ mod host {
                 if !pointer.is_null() {
                     // SAFETY: pointer is a live State.
                     unsafe {
-                        (*pointer).move_selection(if message == NAV_PAGE_UP {
-                            -(VISIBLE_ROWS as isize)
-                        } else {
-                            VISIBLE_ROWS as isize
-                        });
-                        InvalidateRect(hwnd, null(), 0);
+                        let state = &mut *pointer;
+                        let old_scroll = state.scroll;
+                        let old_selected = state.selected;
+                        state.page_by(if message == NAV_PAGE_UP { -1 } else { 1 });
+                        if state.scroll != old_scroll || state.selected != old_selected {
+                            InvalidateRect(hwnd, null(), 0);
+                        }
                     }
                 }
                 0
@@ -2101,9 +2121,14 @@ mod host {
                     let delta = ((wparam >> 16) & 0xffff) as i16 as i32;
                     // SAFETY: pointer is a live State.
                     unsafe {
-                        (*pointer).note_activity();
-                        (*pointer).scroll_by(if delta > 0 { -3 } else { 3 });
-                        InvalidateRect(hwnd, null(), 0);
+                        let state = &mut *pointer;
+                        state.note_activity();
+                        let old_scroll = state.scroll;
+                        let old_selected = state.selected;
+                        state.scroll_by(if delta > 0 { -1 } else { 1 });
+                        if state.scroll != old_scroll || state.selected != old_selected {
+                            InvalidateRect(hwnd, null(), 0);
+                        }
                     }
                 }
                 0
