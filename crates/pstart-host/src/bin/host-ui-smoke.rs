@@ -148,7 +148,9 @@ mod smoke {
             .env("PSTART_HOST_DB", &history_path);
         if external {
             command.env("PSTART_SMOKE_SELECTION", "1");
-            if std::env::var_os("PSTART_UI_BENCH_RANDOM").is_some() {
+            if std::env::var_os("PSTART_UI_BENCH_RANDOM").is_some()
+                || std::env::var_os("PSTART_UI_BENCH_QUERY_FILE").is_some()
+            {
                 command.env("PSTART_SMOKE_GENERATION", "1");
             }
         } else {
@@ -334,6 +336,57 @@ mod smoke {
                     SendMessageW(edit, WM_KEYDOWN, VK_HOME as usize, 0);
                 }
                 wait_selected(hwnd, 1)?;
+            }
+            if external {
+                if let Ok(path) = std::env::var("PSTART_UI_BENCH_QUERY_FILE") {
+                    let text = std::fs::read_to_string(path)?;
+                    let mut generation = parse_generation(&window_text(hwnd)).unwrap_or(0);
+                    let mut samples = Vec::new();
+                    let mut expected_hits = 0usize;
+                    let mut hit_missing = 0usize;
+                    let mut unexpected_hits = 0usize;
+                    for line in text.lines() {
+                        let Some((expected, query)) = line.split_once('\t') else {
+                            continue;
+                        };
+                        if query.is_empty() {
+                            continue;
+                        }
+                        let expected_hit = expected.trim() == "1";
+                        generation = generation.wrapping_add(1);
+                        let started = Instant::now();
+                        send_text(edit, query);
+                        wait_generation(hwnd, generation, Duration::from_secs(3))?;
+                        let count = parse_title(&window_text(hwnd))
+                            .map(|(count, _)| count)
+                            .unwrap_or(0);
+                        samples.push(started.elapsed().as_micros());
+                        if expected_hit {
+                            expected_hits += 1;
+                            if count == 0 {
+                                hit_missing += 1;
+                            }
+                        } else if count > 0 {
+                            unexpected_hits += 1;
+                        }
+                    }
+                    samples.sort_unstable();
+                    let p50 = samples[samples.len() / 2];
+                    let p95_index = (samples.len() * 95).div_ceil(100).saturating_sub(1);
+                    let p95 = samples[p95_index];
+                    let p99_index = (samples.len() * 99).div_ceil(100).saturating_sub(1);
+                    let p99 = samples[p99_index];
+                    let max = *samples.last().unwrap_or(&0);
+                    println!(
+                        "ui_file n={} expected_hits={expected_hits} hit_missing={hit_missing} unexpected_hits={unexpected_hits} p50_us={p50} p95_us={p95} p99_us={p99} max_us={max}",
+                        samples.len()
+                    );
+                    kill(&mut first);
+                    if hit_missing > 0 {
+                        return Err(format!("{hit_missing} expected hits were missing").into());
+                    }
+                    return Ok(());
+                }
             }
             if external {
                 if let Ok(value) = std::env::var("PSTART_UI_BENCH_RANDOM") {
