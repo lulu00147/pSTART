@@ -12,4 +12,6 @@
 .env
 .env.*
 __pycache__/
+/engineering/
+/fuzz/
 /engineering/loop/report/
