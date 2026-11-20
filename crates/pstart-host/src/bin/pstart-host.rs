@@ -59,7 +59,9 @@ mod host {
     };
     use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
     use windows_sys::Win32::System::SystemInformation::GetTickCount64;
-    use windows_sys::Win32::System::Threading::CreateMutexW;
+    use windows_sys::Win32::System::Threading::{
+        AttachThreadInput, CreateMutexW, GetCurrentThreadId,
+    };
     use windows_sys::Win32::UI::HiDpi::{
         GetDpiForSystem, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
@@ -73,24 +75,22 @@ mod host {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CallNextHookEx, CallWindowProcW, CreateWindowExW, DefWindowProcW,
-        DispatchMessageW, FindWindowW, GetClientRect, GetCursorPos, GetMessageW, GetParent,
-        GetSystemMetrics, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
-        KillTimer, LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
-        SendMessageW, SetForegroundWindow, SetProcessDPIAware, SetTimer, SetWindowLongPtrW,
-        SetWindowPos, SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage,
-        UnhookWindowsHookEx, CS_HREDRAW, CS_VREDRAW, EN_CHANGE, ES_AUTOHSCROLL, ES_LEFT,
-        GWLP_USERDATA, GWLP_WNDPROC, HC_ACTION, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, MSG,
-        SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
-        WA_INACTIVE, WH_KEYBOARD_LL, WM_ACTIVATE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
+        DispatchMessageW, FindWindowW, GetClientRect, GetCursorPos, GetForegroundWindow,
+        GetMessageW, GetParent, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextLengthW,
+        GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, KillTimer, LoadCursorW,
+        MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
+        SetForegroundWindow, SetProcessDPIAware, SetTimer, SetWindowLongPtrW, SetWindowPos,
+        SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
+        CS_HREDRAW, CS_VREDRAW, EN_CHANGE, ES_AUTOHSCROLL, ES_LEFT, GWLP_USERDATA, GWLP_WNDPROC,
+        HC_ACTION, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, MSG, SM_CXSCREEN, SM_CYSCREEN,
+        SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, WA_INACTIVE, WH_KEYBOARD_LL,
+        WM_ACTIVATE, WM_ACTIVATEAPP, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
         WM_ERASEBKGND, WM_HOTKEY, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
         WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_PAINT,
         WM_SETFOCUS, WM_SETFONT, WM_SIZE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WNDPROC,
         WS_BORDER, WS_CHILD, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
     };
 
-    const WIDTH: i32 = 688;
-    const HEIGHT: i32 = 428;
-    const INPUT_MARGIN: i32 = 0;
     const INPUT_HEIGHT: i32 = 32;
     const LIST_TOP: i32 = INPUT_HEIGHT + 8;
     const ROW_HEIGHT: i32 = 52;
@@ -1629,14 +1629,8 @@ mod host {
             return Err(io::Error::last_os_error().into());
         }
         // SAFETY: all pointers are valid for the call.
-        let dpi = initial_dpi();
-        let width = scale_at(WIDTH, dpi);
-        let height = scale_at(HEIGHT, dpi);
-        let (x, y) = overlay_position(
-            width,
-            height,
-            scale_at(INPUT_MARGIN + INPUT_HEIGHT / 2, dpi),
-        );
+        let (width, height) = golden_window_size();
+        let (x, y) = overlay_position(width, height, height / 2);
         let title = wide("pSTART");
         // SAFETY: class is registered; title lives for the call.
         let hwnd = unsafe {
@@ -1814,25 +1808,16 @@ mod host {
                     // SAFETY: show, focus, and reposition the overlay on the cursor monitor.
                     unsafe {
                         if !pointer.is_null() {
-                            let dpi = (*pointer).dpi;
-                            let width = scale_at(WIDTH, dpi);
-                            let height = scale_at(HEIGHT, dpi);
-                            let (x, y) = overlay_position(
-                                width,
-                                height,
-                                scale_at(INPUT_MARGIN + INPUT_HEIGHT / 2, dpi),
-                            );
+                            let (width, height) = golden_window_size();
+                            let (x, y) = overlay_position(width, height, height / 2);
                             if let Ok(mut apps) = (*pointer).apps.lock() {
                                 apps.refresh(&start_menu_roots());
                             }
                             SetWindowPos(hwnd, null_mut(), x, y, width, height, SWP_NOZORDER);
                         }
                         ShowWindow(hwnd, SW_SHOWNORMAL);
-                        BringWindowToTop(hwnd);
-                        SetForegroundWindow(hwnd);
                         if !pointer.is_null() {
-                            SetFocus((*pointer).edit);
-                            SendMessageW((*pointer).edit, WM_SETFOCUS, 0, 0);
+                            activate_overlay(hwnd, (*pointer).edit);
                         }
                         InvalidateRect(hwnd, null(), 0);
                     }
@@ -1967,6 +1952,15 @@ mod host {
                     unsafe {
                         (*pointer).scroll_by(if delta > 0 { -3 } else { 3 });
                         InvalidateRect(hwnd, null(), 0);
+                    }
+                }
+                0
+            }
+            WM_ACTIVATEAPP if wparam == 0 => {
+                if !pointer.is_null() {
+                    // SAFETY: hide when another application takes focus.
+                    unsafe {
+                        ShowWindow(hwnd, SW_HIDE);
                     }
                 }
                 0
@@ -2133,6 +2127,22 @@ mod host {
             }
         }
         edit
+    }
+
+    unsafe fn activate_overlay(hwnd: HWND, edit: HWND) {
+        let foreground = GetForegroundWindow();
+        let mut process_id = 0u32;
+        let foreground_thread = GetWindowThreadProcessId(foreground, &mut process_id);
+        let current_thread = GetCurrentThreadId();
+        let attached = foreground_thread != current_thread
+            && AttachThreadInput(current_thread, foreground_thread, 1) != 0;
+        SetForegroundWindow(hwnd);
+        BringWindowToTop(hwnd);
+        SetFocus(edit);
+        SendMessageW(edit, WM_SETFOCUS, 0, 0);
+        if attached {
+            AttachThreadInput(current_thread, foreground_thread, 0);
+        }
     }
 
     unsafe fn layout(hwnd: HWND, edit: HWND, dpi: i32) {
@@ -2362,6 +2372,18 @@ mod host {
 
     fn scale_at(value: i32, dpi: i32) -> i32 {
         value * dpi / 96
+    }
+
+    fn golden_window_size() -> (i32, i32) {
+        let width = unsafe { GetSystemMetrics(SM_CXSCREEN) }.max(1);
+        let height = unsafe { GetSystemMetrics(SM_CYSCREEN) }.max(1);
+        golden_window_size_for(width, height)
+    }
+
+    fn golden_window_size_for(screen_width: i32, screen_height: i32) -> (i32, i32) {
+        let width = (f64::from(screen_width) * (3.0 - 5.0_f64.sqrt()) / 2.0).round() as i32;
+        let height = (f64::from(screen_height) * (5.0_f64.sqrt() - 1.0) / 2.0).round() as i32;
+        (width.max(320), height.max(240))
     }
 
     fn overlay_position(width: i32, height: i32, input_anchor_y: i32) -> (i32, i32) {
@@ -2595,8 +2617,16 @@ mod host {
 
     #[cfg(test)]
     mod tests {
-        use super::{place_in_work_area, query_failure_status, result_status};
+        use super::{
+            golden_window_size_for, place_in_work_area, query_failure_status, result_status,
+        };
         use pstart_host::ClientError;
+
+        #[test]
+        fn golden_size_matches_screen_ratios() {
+            assert_eq!(golden_window_size_for(1920, 1080), (733, 667));
+            assert_eq!(golden_window_size_for(1280, 720), (489, 445));
+        }
 
         #[test]
         fn center_on_primary_work_area() {
