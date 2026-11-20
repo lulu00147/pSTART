@@ -44,11 +44,12 @@ mod host {
     };
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
-        CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, GetMonitorInfoW,
-        GetStockObject, InvalidateRect, MonitorFromPoint, SelectObject, SetBkMode, SetTextColor,
-        TextOutW, UpdateWindow, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
-        DEFAULT_GUI_FONT, DEFAULT_PITCH, FF_DONTCARE, FW_NORMAL, HDC, HFONT, MONITORINFO,
-        MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+        CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, GetDC, GetMonitorInfoW,
+        GetStockObject, InvalidateRect, MonitorFromPoint, ReleaseDC, SelectObject, SetBkMode,
+        SetTextColor, TextOutW, UpdateWindow, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
+        DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, FF_DONTCARE, FW_NORMAL, HDC, HFONT,
+        MONITORINFO, MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY,
+        TRANSPARENT,
     };
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -70,7 +71,7 @@ mod host {
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         SetFocus, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LCONTROL, VK_NEXT,
-        VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_UP,
+        VK_OEM_MINUS, VK_OEM_PLUS, VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_UP,
     };
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -93,6 +94,7 @@ mod host {
 
     const INPUT_HEIGHT: i32 = 32;
     const LIST_TOP: i32 = INPUT_HEIGHT;
+    const COUNT_WIDTH: i32 = 48;
     const VISIBLE_ROWS: usize = 7;
     const EDIT_ID: usize = 1001;
     const HOTKEY_ID: i32 = 1;
@@ -531,6 +533,12 @@ mod host {
         }
 
         fn publish_result_count(&self) {
+            if !self.edit.is_null() {
+                // SAFETY: edit is a live child; repaint the overlay counter.
+                unsafe {
+                    InvalidateRect(self.edit, null(), 0);
+                }
+            }
             if env::var_os("PSTART_SMOKE_TITLE").is_none() {
                 return;
             }
@@ -1938,6 +1946,10 @@ mod host {
                     let y = ((lparam >> 16) & 0xffff) as i16 as i32;
                     // SAFETY: pointer is a live State.
                     unsafe {
+                        if y < (*pointer).scale(INPUT_HEIGHT) {
+                            SetFocus((*pointer).edit);
+                            return 0;
+                        }
                         let list_top = (*pointer).scale(LIST_TOP);
                         if y >= list_top {
                             let mut client = RECT::default();
@@ -2078,6 +2090,8 @@ mod host {
                 VK_DOWN => Some(NAV_DOWN),
                 VK_PRIOR => Some(NAV_PAGE_UP),
                 VK_NEXT => Some(NAV_PAGE_DOWN),
+                VK_OEM_MINUS => Some(NAV_PAGE_UP),
+                VK_OEM_PLUS => Some(NAV_PAGE_DOWN),
                 VK_HOME => Some(NAV_HOME),
                 VK_END => Some(NAV_END),
                 VK_DELETE if unsafe { GetWindowTextLengthW(hwnd) } <= 0 => Some(NAV_DELETE),
@@ -2096,6 +2110,36 @@ mod host {
         let original = ORIGINAL_EDIT_PROC.load(Ordering::Relaxed);
         // SAFETY: stored value came from SetWindowLongPtrW for this control.
         let original: WNDPROC = unsafe { std::mem::transmute(original) };
+        if message == WM_PAINT {
+            // SAFETY: forwarding to the original EDIT procedure.
+            let result = unsafe { CallWindowProcW(original, hwnd, message, wparam, lparam) };
+            if !pointer.is_null() {
+                // SAFETY: pointer is a live State and hwnd is its EDIT child.
+                unsafe {
+                    let state = &*pointer;
+                    let hdc = GetDC(hwnd);
+                    if !hdc.is_null() {
+                        let mut client = RECT::default();
+                        GetClientRect(hwnd, &mut client);
+                        let font = if state.font.is_null() {
+                            GetStockObject(DEFAULT_GUI_FONT)
+                        } else {
+                            state.font
+                        };
+                        let old = SelectObject(hdc, font);
+                        SetBkMode(hdc, TRANSPARENT as i32);
+                        let count = state.items.len().to_string();
+                        let x = client.right
+                            - state.scale(8)
+                            - count.chars().count() as i32 * state.scale(8);
+                        draw_text(hdc, &count, x, state.scale(7), rgb(150, 150, 150));
+                        SelectObject(hdc, old);
+                        ReleaseDC(hwnd, hdc);
+                    }
+                }
+            }
+            return result;
+        }
         // SAFETY: forwarding the original message to the original procedure.
         unsafe { CallWindowProcW(original, hwnd, message, wparam, lparam) }
     }
@@ -2165,6 +2209,7 @@ mod host {
             // SAFETY: edit is a live child.
             unsafe {
                 MoveWindow(edit, 0, 0, width, scale_at(INPUT_HEIGHT, dpi), 1);
+                SendMessageW(edit, 0x00D3, 2, (scale_at(COUNT_WIDTH, dpi) << 16) as isize);
             }
         }
     }
@@ -2305,14 +2350,6 @@ mod host {
                         0,
                         state.scale(LIST_TOP),
                         rgb(180, 180, 190),
-                    );
-                } else {
-                    draw_text(
-                        target,
-                        &state.status,
-                        0,
-                        client.bottom - state.scale(24),
-                        rgb(140, 140, 150),
                     );
                 }
                 SelectObject(target, old);
