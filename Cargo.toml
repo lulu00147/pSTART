@@ -16,9 +16,8 @@ members = [
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
-license = "MIT OR Apache-2.0"
 authors = ["pSTART contributors"]
-repository = "https://example.invalid/pstart"
+repository = "https://github.com/lulu00147/pSTART.git"
 description = "pSTART: native Windows launcher and NTFS file search platform"
 
 [workspace.dependencies]

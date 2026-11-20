@@ -98,7 +98,7 @@ C:\ProgramData\pSTART\
 /action <path>
 /copy <text>
 /open <path>
-/alias <name> <path>
+/alias <name> <target>
 /plugins
 /config
 /settings
