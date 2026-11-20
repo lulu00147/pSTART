@@ -92,8 +92,7 @@ mod host {
     };
 
     const INPUT_HEIGHT: i32 = 32;
-    const LIST_TOP: i32 = INPUT_HEIGHT + 8;
-    const ROW_HEIGHT: i32 = 52;
+    const LIST_TOP: i32 = INPUT_HEIGHT;
     const VISIBLE_ROWS: usize = 7;
     const EDIT_ID: usize = 1001;
     const HOTKEY_ID: i32 = 1;
@@ -525,6 +524,10 @@ mod host {
 
         fn scale(&self, value: i32) -> i32 {
             scale_at(value, self.dpi)
+        }
+
+        fn row_height(&self, client_height: i32) -> i32 {
+            ((client_height - self.scale(LIST_TOP)) / VISIBLE_ROWS as i32).max(1)
         }
 
         fn publish_result_count(&self) {
@@ -1937,7 +1940,10 @@ mod host {
                     unsafe {
                         let list_top = (*pointer).scale(LIST_TOP);
                         if y >= list_top {
-                            let row = ((y - list_top) / (*pointer).scale(ROW_HEIGHT)) as usize;
+                            let mut client = RECT::default();
+                            GetClientRect(hwnd, &mut client);
+                            let row =
+                                ((y - list_top) / (*pointer).row_height(client.bottom)) as usize;
                             let index = (*pointer).scroll + row;
                             if index < (*pointer).items.len() {
                                 (*pointer).select_index(index);
@@ -2263,6 +2269,7 @@ mod host {
                 };
                 let old = SelectObject(target, font);
                 SetBkMode(target, TRANSPARENT as i32);
+                let row_height = state.row_height(height);
                 for (index, item) in state
                     .items
                     .iter()
@@ -2270,24 +2277,23 @@ mod host {
                     .skip(state.scroll)
                     .take(VISIBLE_ROWS)
                 {
-                    let top = state.scale(LIST_TOP)
-                        + (index - state.scroll) as i32 * state.scale(ROW_HEIGHT);
+                    let top = state.scale(LIST_TOP) + (index - state.scroll) as i32 * row_height;
                     if state.selected == Some(index) {
                         let selected = RECT {
-                            left: state.scale(16),
-                            top: top - state.scale(4),
-                            right: client.right - state.scale(16),
-                            bottom: top + state.scale(40),
+                            left: 0,
+                            top,
+                            right: client.right,
+                            bottom: top + row_height,
                         };
                         let brush = CreateSolidBrush(state.skin.selection);
                         FillRect(target, &selected, brush);
                         DeleteObject(brush);
                     }
-                    draw_text(target, &item.name, state.scale(24), top, state.skin.text);
+                    draw_text(target, &item.name, 0, top, state.skin.text);
                     draw_text(
                         target,
                         &item.path,
-                        state.scale(24),
+                        0,
                         top + state.scale(20),
                         state.skin.path,
                     );
@@ -2296,7 +2302,7 @@ mod host {
                     draw_text(
                         target,
                         &state.status,
-                        state.scale(24),
+                        0,
                         state.scale(LIST_TOP),
                         rgb(180, 180, 190),
                     );
@@ -2304,7 +2310,7 @@ mod host {
                     draw_text(
                         target,
                         &state.status,
-                        state.scale(24),
+                        0,
                         client.bottom - state.scale(24),
                         rgb(140, 140, 150),
                     );
