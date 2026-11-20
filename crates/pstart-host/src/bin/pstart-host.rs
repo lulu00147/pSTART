@@ -82,8 +82,8 @@ mod host {
         MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
         SetForegroundWindow, SetProcessDPIAware, SetTimer, SetWindowLongPtrW, SetWindowPos,
         SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
-        CS_HREDRAW, CS_VREDRAW, EN_CHANGE, ES_AUTOHSCROLL, ES_LEFT, GWLP_USERDATA, GWLP_WNDPROC,
-        HC_ACTION, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, MSG, SM_CXSCREEN, SM_CYSCREEN,
+        CS_HREDRAW, CS_VREDRAW, EN_CHANGE, ES_AUTOHSCROLL, ES_LEFT, ES_MULTILINE, GWLP_USERDATA,
+        GWLP_WNDPROC, HC_ACTION, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, MSG, SM_CXSCREEN, SM_CYSCREEN,
         SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, WA_INACTIVE, WH_KEYBOARD_LL,
         WM_ACTIVATE, WM_ACTIVATEAPP, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
         WM_ERASEBKGND, WM_HOTKEY, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
@@ -2132,7 +2132,7 @@ mod host {
                         let x = client.right
                             - state.scale(8)
                             - count.chars().count() as i32 * state.scale(8);
-                        draw_text(hdc, &count, x, state.scale(7), rgb(150, 150, 150));
+                        draw_text(hdc, &count, x, state.scale(8), rgb(150, 150, 150));
                         SelectObject(hdc, old);
                         ReleaseDC(hwnd, hdc);
                     }
@@ -2154,7 +2154,12 @@ mod host {
                 0,
                 class.as_ptr(),
                 empty.as_ptr(),
-                WS_CHILD | WS_VISIBLE | WS_BORDER | (ES_LEFT as u32) | (ES_AUTOHSCROLL as u32),
+                WS_CHILD
+                    | WS_VISIBLE
+                    | WS_BORDER
+                    | (ES_LEFT as u32)
+                    | (ES_AUTOHSCROLL as u32)
+                    | (ES_MULTILINE as u32),
                 margin,
                 margin,
                 scale_at(688, dpi),
@@ -2208,8 +2213,17 @@ mod host {
         if !edit.is_null() {
             // SAFETY: edit is a live child.
             unsafe {
-                MoveWindow(edit, 0, 0, width, scale_at(INPUT_HEIGHT, dpi), 1);
+                let height = scale_at(INPUT_HEIGHT, dpi);
+                let pad = scale_at(8, dpi);
+                MoveWindow(edit, 0, 0, width, height, 1);
                 SendMessageW(edit, 0x00D3, 2, (scale_at(COUNT_WIDTH, dpi) << 16) as isize);
+                let mut format = RECT {
+                    left: 0,
+                    top: pad,
+                    right: width,
+                    bottom: height - pad,
+                };
+                SendMessageW(edit, 0x00B3, 0, &mut format as *mut RECT as isize);
             }
         }
     }

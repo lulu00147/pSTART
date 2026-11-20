@@ -45,11 +45,11 @@ mod smoke {
         VK_ESCAPE, VK_HOME, VK_RETURN, VK_UP,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowExW, FindWindowW, GetClientRect, GetForegroundWindow, GetWindowRect,
-        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
-        PostMessageW, SendMessageW, SetForegroundWindow, SetWindowTextW, ShowWindow, SW_SHOW,
-        WM_CHAR, WM_CLOSE, WM_DPICHANGED, WM_GETFONT, WM_GETTEXT, WM_HOTKEY, WM_KEYDOWN,
-        WM_SETTEXT,
+        FindWindowExW, FindWindowW, GetClientRect, GetForegroundWindow, GetSystemMetrics,
+        GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible, PostMessageW, SendMessageW, SetForegroundWindow, SetWindowTextW,
+        ShowWindow, SM_CXSCREEN, SW_SHOW, WM_CHAR, WM_CLOSE, WM_DPICHANGED, WM_GETFONT, WM_GETTEXT,
+        WM_HOTKEY, WM_KEYDOWN, WM_SETTEXT,
     };
 
     use pstart_core::{FileId, FileItem, Frn, VolumeId, PROTOCOL_VERSION};
@@ -167,9 +167,14 @@ mod smoke {
             // SAFETY: rect is writable and hwnd is live.
             unsafe { GetWindowRect(hwnd, &mut rect) };
             let width = rect.right - rect.left;
-            if !(1000..=1160).contains(&width) {
+            let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+            let expected = (f64::from(screen_width) * (3.0 - 5.0_f64.sqrt()) / 2.0).round() as i32;
+            if (width - expected).abs() > 2 {
                 kill(&mut first);
-                return Err(format!("DPI scaling did not apply; width={width}").into());
+                return Err(format!(
+                    "golden-ratio width mismatch; width={width} expected={expected}"
+                )
+                .into());
             }
         }
 
