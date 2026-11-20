@@ -23,6 +23,43 @@ pub fn scroll_for_selection(scroll: usize, selected: usize, visible_rows: usize)
     }
 }
 
+/// Return the page-aligned start that contains `selected`.
+#[must_use]
+pub fn page_for_selection(len: usize, selected: usize, visible_rows: usize) -> usize {
+    if len == 0 || visible_rows == 0 {
+        return 0;
+    }
+    let page = selected / visible_rows;
+    let last_page = (len - 1) / visible_rows;
+    page.min(last_page) * visible_rows
+}
+
+/// Clamp a page-aligned scroll offset to the last page.
+#[must_use]
+pub fn clamp_page(len: usize, scroll: usize, visible_rows: usize) -> usize {
+    if len == 0 || visible_rows == 0 {
+        return 0;
+    }
+    let last_page = (len - 1) / visible_rows;
+    (scroll / visible_rows).min(last_page) * visible_rows
+}
+
+/// Move one page forward (`delta >= 0`) or backward.
+#[must_use]
+pub fn page_by(len: usize, scroll: usize, visible_rows: usize, delta: isize) -> usize {
+    if len == 0 || visible_rows == 0 {
+        return 0;
+    }
+    let current = scroll / visible_rows;
+    let last_page = (len - 1) / visible_rows;
+    let page = if delta < 0 {
+        current.saturating_sub(1)
+    } else {
+        (current + 1).min(last_page)
+    };
+    page * visible_rows
+}
+
 /// Clamp a requested index into `[0, len)`; empty lists have no index.
 #[must_use]
 pub fn selection_index(index: usize, len: usize) -> Option<usize> {
@@ -62,6 +99,28 @@ mod tests {
         assert_eq!(move_selection(Some(0), 3, 1), Some(1));
         assert_eq!(move_selection(Some(2), 3, 1), Some(2));
         assert_eq!(move_selection(Some(1), 3, -5), Some(0));
+    }
+
+    #[test]
+    fn page_selection_stays_visible() {
+        for len in [1, 9, 10, 18, 19, 50] {
+            for selected in 0..len {
+                let scroll = page_for_selection(len, selected, 9);
+                assert!(selected >= scroll);
+                assert!(selected < scroll + 9);
+            }
+        }
+        assert_eq!(page_for_selection(50, 49, 9), 45);
+        assert_eq!(page_for_selection(50, 0, 9), 0);
+    }
+
+    #[test]
+    fn page_helpers_stay_aligned() {
+        assert_eq!(clamp_page(50, 99, 9), 45);
+        assert_eq!(clamp_page(9, 9, 9), 0);
+        assert_eq!(page_by(50, 0, 9, 1), 9);
+        assert_eq!(page_by(50, 45, 9, 1), 45);
+        assert_eq!(page_by(50, 9, 9, -1), 0);
     }
 
     #[test]

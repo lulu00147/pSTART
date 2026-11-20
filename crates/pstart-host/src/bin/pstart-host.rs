@@ -78,8 +78,8 @@ mod host {
         BringWindowToTop, CallNextHookEx, CallWindowProcW, CreateWindowExW, DefWindowProcW,
         DispatchMessageW, FindWindowW, GetClientRect, GetCursorPos, GetForegroundWindow,
         GetMessageW, GetParent, GetSystemMetrics, GetWindowLongPtrW, GetWindowTextLengthW,
-        GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, KillTimer, LoadCursorW,
-        MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
+        GetWindowTextW, GetWindowThreadProcessId, IsWindow, IsWindowVisible, KillTimer,
+        LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
         SetForegroundWindow, SetProcessDPIAware, SetTimer, SetWindowLongPtrW, SetWindowPos,
         SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
         CS_HREDRAW, CS_VREDRAW, EN_CHANGE, ES_AUTOHSCROLL, ES_LEFT, GWLP_USERDATA, GWLP_WNDPROC,
@@ -393,6 +393,7 @@ mod host {
         status: String,
         ime_composing: bool,
         previous_foreground: isize,
+        previous_foreground_pid: u32,
         idle_timeout_ms: u64,
         last_activity: Instant,
         published_count: usize,
@@ -549,6 +550,7 @@ mod host {
                 status: "Type to search".to_owned(),
                 ime_composing: false,
                 previous_foreground: 0,
+                previous_foreground_pid: 0,
                 idle_timeout_ms,
                 last_activity: Instant::now(),
                 published_count: usize::MAX,
@@ -673,8 +675,9 @@ mod host {
                 self.publish_result_count();
                 return;
             }
-            let generation = self.scheduler.begin();
-            self.query_started = Some(Instant::now());
+            self.invalidate_pending();
+            self.query_started = None;
+            self.pending_history_query = None;
             if let Some(path) = text.strip_prefix("/backup ") {
                 if path.is_empty() {
                     self.status = "Usage: /backup <path>".to_owned();
@@ -865,6 +868,8 @@ mod host {
             self.record_history(text);
             self.pending_history_query = Some(text.to_owned());
             let text = self.resolve_alias(text);
+            let generation = self.scheduler.begin();
+            self.query_started = Some(Instant::now());
             let _ = self.query_request_tx.send(QueryRequest {
                 generation,
                 text,
@@ -1087,44 +1092,28 @@ mod host {
                 return;
             };
             self.selected = Some(index);
-            let page = (self.scroll / VISIBLE_ROWS) * VISIBLE_ROWS;
-            self.scroll = if index < page {
-                page.saturating_sub(VISIBLE_ROWS)
-            } else if index >= page + VISIBLE_ROWS {
-                page + VISIBLE_ROWS
-            } else {
-                page
-            };
-            self.clamp_scroll();
+            self.scroll =
+                pstart_host::selection::page_for_selection(self.items.len(), index, VISIBLE_ROWS);
             self.publish_result_count();
         }
 
-        fn scroll_by(&mut self, delta: isize) {
-            self.page_by(delta);
+        fn scroll_by(&mut self, delta: isize) -> bool {
+            self.page_by(delta)
         }
 
-        fn page_by(&mut self, delta: isize) {
+        fn page_by(&mut self, delta: isize) -> bool {
             if self.items.is_empty() || delta == 0 {
-                return;
+                return false;
             }
-            let pages = self.items.len().div_ceil(VISIBLE_ROWS);
-            let current = self.scroll / VISIBLE_ROWS;
-            let next = if delta < 0 {
-                current.saturating_sub(1)
-            } else {
-                (current + 1).min(pages.saturating_sub(1))
-            };
-            if next == current {
-                return;
+            let next =
+                pstart_host::selection::page_by(self.items.len(), self.scroll, VISIBLE_ROWS, delta);
+            if next == self.scroll {
+                return false;
             }
-            self.scroll = next * VISIBLE_ROWS;
+            self.scroll = next;
             self.selected = Some(self.scroll.min(self.items.len() - 1));
             self.publish_result_count();
-        }
-
-        fn clamp_scroll(&mut self) {
-            let max_start = self.items.len().saturating_sub(1) / VISIBLE_ROWS * VISIBLE_ROWS;
-            self.scroll = ((self.scroll / VISIBLE_ROWS) * VISIBLE_ROWS).min(max_start);
+            true
         }
 
         fn show_action_confirmation(&mut self, request: ActionRequest) {
@@ -1950,7 +1939,10 @@ mod host {
                             let state = &mut *pointer;
                             let foreground = GetForegroundWindow();
                             if !foreground.is_null() && foreground != hwnd {
+                                let mut pid = 0u32;
+                                GetWindowThreadProcessId(foreground, &mut pid);
                                 state.previous_foreground = foreground as isize;
+                                state.previous_foreground_pid = pid;
                             }
                             state.note_activity();
                             SetTimer(hwnd, IDLE_TIMER, 100, None);
@@ -1961,10 +1953,11 @@ mod host {
                             SetWindowPos(hwnd, null_mut(), x, y, width, height, SWP_NOZORDER);
                         }
                         ShowWindow(hwnd, SW_SHOWNORMAL);
-                        if !pointer.is_null() {
-                            activate_overlay(hwnd, (*pointer).edit);
+                        if pointer.is_null() || activate_overlay(hwnd, (*pointer).edit) {
+                            InvalidateRect(hwnd, null(), 0);
+                        } else {
+                            hide_overlay(hwnd, pointer, false);
                         }
-                        InvalidateRect(hwnd, null(), 0);
                     }
                 }
                 0
@@ -1995,9 +1988,9 @@ mod host {
                         let state = &mut *pointer;
                         let old_scroll = state.scroll;
                         let old_selected = state.selected;
-                        state.page_by(if message == NAV_PAGE_UP { -1 } else { 1 });
-                        if state.scroll != old_scroll || state.selected != old_selected {
-                            InvalidateRect(hwnd, null(), 0);
+                        let changed = state.page_by(if message == NAV_PAGE_UP { -1 } else { 1 });
+                        if changed {
+                            invalidate_selection_change(hwnd, pointer, old_selected, old_scroll);
                         }
                     }
                 }
@@ -2007,13 +2000,16 @@ mod host {
                 if !pointer.is_null() {
                     // SAFETY: pointer is a live State.
                     unsafe {
+                        let state = &mut *pointer;
                         let index = if message == NAV_HOME {
                             0
                         } else {
-                            (*pointer).items.len().saturating_sub(1)
+                            state.items.len().saturating_sub(1)
                         };
-                        (*pointer).select_index(index);
-                        InvalidateRect(hwnd, null(), 0);
+                        let old_selected = state.selected;
+                        let old_scroll = state.scroll;
+                        state.select_index(index);
+                        invalidate_selection_change(hwnd, pointer, old_selected, old_scroll);
                     }
                 }
                 0
@@ -2072,13 +2068,19 @@ mod host {
                         let state = &mut *pointer;
                         let foreground = GetForegroundWindow();
                         if !foreground.is_null() && foreground != hwnd {
+                            let mut pid = 0u32;
+                            GetWindowThreadProcessId(foreground, &mut pid);
                             state.previous_foreground = foreground as isize;
+                            state.previous_foreground_pid = pid;
                         }
                         state.note_activity();
                         SetTimer(hwnd, IDLE_TIMER, 100, None);
                         ShowWindow(hwnd, SW_SHOW);
-                        activate_overlay(hwnd, state.edit);
-                        InvalidateRect(hwnd, null(), 0);
+                        if activate_overlay(hwnd, state.edit) {
+                            InvalidateRect(hwnd, null(), 0);
+                        } else {
+                            hide_overlay(hwnd, pointer, false);
+                        }
                     }
                 }
                 0
@@ -2125,9 +2127,9 @@ mod host {
                         state.note_activity();
                         let old_scroll = state.scroll;
                         let old_selected = state.selected;
-                        state.scroll_by(if delta > 0 { -1 } else { 1 });
-                        if state.scroll != old_scroll || state.selected != old_selected {
-                            InvalidateRect(hwnd, null(), 0);
+                        let changed = state.scroll_by(if delta > 0 { -1 } else { 1 });
+                        if changed {
+                            invalidate_selection_change(hwnd, pointer, old_selected, old_scroll);
                         }
                     }
                 }
@@ -2368,8 +2370,11 @@ mod host {
         edit
     }
 
-    unsafe fn activate_overlay(hwnd: HWND, edit: HWND) {
+    unsafe fn activate_overlay(hwnd: HWND, edit: HWND) -> bool {
         let foreground = GetForegroundWindow();
+        if foreground.is_null() {
+            return false;
+        }
         let mut process_id = 0u32;
         let foreground_thread = GetWindowThreadProcessId(foreground, &mut process_id);
         let current_thread = GetCurrentThreadId();
@@ -2382,17 +2387,34 @@ mod host {
         if attached {
             AttachThreadInput(current_thread, foreground_thread, 0);
         }
+        GetForegroundWindow() == hwnd
     }
 
     unsafe fn hide_overlay(hwnd: HWND, pointer: *mut State, restore_focus: bool) {
         ShowWindow(hwnd, SW_HIDE);
         KillTimer(hwnd, IDLE_TIMER);
+        if !pointer.is_null() {
+            let state = &mut *pointer;
+            if state.pending_action.take().is_some() {
+                state.items.clear();
+                state.selected = None;
+                state.scroll = 0;
+                state.status = "Type to search".to_owned();
+                state.publish_result_count();
+            }
+        }
         if restore_focus && !pointer.is_null() {
             let previous = (*pointer).previous_foreground;
             if previous != 0 && previous != hwnd as isize {
                 let previous = previous as HWND;
+                if IsWindow(previous) == 0 {
+                    return;
+                }
                 let mut process_id = 0u32;
                 let previous_thread = GetWindowThreadProcessId(previous, &mut process_id);
+                if process_id == 0 || process_id != (*pointer).previous_foreground_pid {
+                    return;
+                }
                 let current_thread = GetCurrentThreadId();
                 let attached = previous_thread != current_thread
                     && AttachThreadInput(current_thread, previous_thread, 1) != 0;
@@ -2491,6 +2513,7 @@ mod host {
             unsafe {
                 let height = scale_at(INPUT_HEIGHT, dpi);
                 MoveWindow(edit, 0, 0, width, height, 1);
+                SendMessageW(edit, 0x00C5, 4096, 0);
                 SendMessageW(edit, 0x00D3, 2, (scale_at(COUNT_WIDTH, dpi) << 16) as isize);
             }
         }
@@ -2631,8 +2654,8 @@ mod host {
                         DeleteObject(brush);
                     }
                     let display = &state.display_rows[index - state.scroll];
-                    draw_text(target, &display.name, 0, top, state.skin.text);
-                    draw_text(
+                    draw_text_exact(target, &display.name, 0, top, state.skin.text);
+                    draw_text_exact(
                         target,
                         &display.path,
                         0,
@@ -2674,23 +2697,42 @@ mod host {
         }
     }
 
+    fn truncated_text(text: &str, max_units: usize) -> String {
+        let max_units = max_units.max(1);
+        let mut units = 0usize;
+        let mut out = String::new();
+        for ch in text.chars() {
+            let width = ch.len_utf16();
+            if units + width > max_units.saturating_sub(1) {
+                break;
+            }
+            out.push(ch);
+            units += width;
+        }
+        if out.encode_utf16().count() < text.encode_utf16().count() {
+            out.push('…');
+        }
+        out
+    }
+
     fn clipped_text(text: &str, width: i32, unit_width: i32) -> String {
         let max_units = ((width.max(1) / unit_width.max(1)) as usize).max(1);
-        let mut utf16: Vec<u16> = text.encode_utf16().take(max_units).collect();
-        if text.encode_utf16().count() > max_units {
-            utf16.truncate(max_units.saturating_sub(1));
-            utf16.push(0x2026);
+        truncated_text(text, max_units)
+    }
+
+    unsafe fn draw_text_exact(hdc: HDC, text: &str, x: i32, y: i32, color: COLORREF) {
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        // SAFETY: hdc is valid for painting; utf16 pointer/length are valid.
+        unsafe {
+            SetTextColor(hdc, color);
+            TextOutW(hdc, x, y, utf16.as_ptr(), utf16.len() as i32);
         }
-        String::from_utf16_lossy(&utf16)
     }
 
     unsafe fn draw_text(hdc: HDC, text: &str, x: i32, y: i32, color: COLORREF) {
         const DISPLAY_UNITS: usize = 48;
-        let mut utf16: Vec<u16> = text.encode_utf16().take(DISPLAY_UNITS).collect();
-        if text.encode_utf16().count() > DISPLAY_UNITS {
-            utf16.truncate(DISPLAY_UNITS - 2);
-            utf16.push(0x2026);
-        }
+        let text = truncated_text(text, DISPLAY_UNITS);
+        let utf16: Vec<u16> = text.encode_utf16().collect();
         // SAFETY: hdc is valid for painting; utf16 pointer/length are valid.
         unsafe {
             SetTextColor(hdc, color);
@@ -3001,7 +3043,7 @@ mod host {
     mod tests {
         use super::{
             golden_window_size_for, input_center_y, place_in_work_area, query_failure_status,
-            result_status,
+            result_status, truncated_text,
         };
         use pstart_host::ClientError;
 
@@ -3009,6 +3051,13 @@ mod host {
         fn golden_size_matches_screen_ratios() {
             assert_eq!(golden_window_size_for(1920, 1080), (733, 413));
             assert_eq!(golden_window_size_for(1280, 720), (489, 275));
+        }
+
+        #[test]
+        fn truncation_respects_utf16_boundaries() {
+            assert_eq!(truncated_text("abcdef", 3), "ab…");
+            assert_eq!(truncated_text("abcdef", 1), "…");
+            assert_eq!(truncated_text("😀abcdef", 4), "😀a…");
         }
 
         #[test]
